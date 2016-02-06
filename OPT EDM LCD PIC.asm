@@ -1,13 +1,9 @@
 ;--------------------------------------------------------------------------------------------------
-; Project:  OPT EDM Notch Cutter -- LCD PIC software
-; Date:     2/29/12
+; Project:  OPT EDM Notch Cutter -- LCD PIC software Model 3
+; Date:     2/06/16
 ; Revision: 1.0
 ;
-; IMPORTANT: When programming the PIC in the notch cutter, turn the Electrode Current switch to
-; Off and the Electrode Motion switch to Setup.
-;
-; Normally, the programming header for the LCD PIC is not installed on the board.  It can be
-; installed in the Main PIC socket, programmed, and then moved to the LCD PIC socket.
+; This code is for the LCD controller PIC on the EDM Notch Cutter User Interface Board.
 ;
 ; Overview:
 ;
@@ -16,22 +12,11 @@
 ; constant refreshing corrects errors which occur in the displayed text due to electrical noise
 ; from the cutting current causing spikes in the LCD display control lines.
 ;
-; There are two PIC controllers on the board -- the Main PIC and the LCD PIC.  This code is
-; for the LCD PIC.  The Main PIC sends data to the LCD PIC via a serial data line for display
-; on the LCD.
-;
 ;--------------------------------------------------------------------------------------------------
 ;
 ; Revision History:
 ;
-; 1.0   Some code and concepts used from source code disassembled from hex object code version 2.7 
-;       from original author.
-; 2.0	Major change to methodolgy. The data from the master PIC is now written to a local buffer
-;		which is then continuously and repeatedly transmitted to the LCD display. All control codes
-; 		received from the master except address change codes are transmitted straight to the display.
-;		The constant refreshing of the display serves to correct errors caused by noise from the
-;		cutting current. The errors manifested as changed or missing characters in the display.
-; 2.1  No changes -- used to verify program downloaded into PIC.
+; 1.0   Code base copied from "OPT EDM LCD PIC" code.
 ;
 ;--------------------------------------------------------------------------------------------------
 ;
@@ -43,7 +28,7 @@
 ; The user manual specified for this display is Dmcman_full-user manual.pdf from www.optrex.com
 ; This manual does not list this exact part number, but seems to be the appropriate manual.
 ;
-; The R/W line is tied permanently low on the board, so only writes to the LCD are allowed.
+; The R/W line on pin RA4 is driven low to write to the LCD, high to read.
 ;
 ; The E line is used to strobe the read/write operations.
 ;
@@ -70,6 +55,14 @@
 ; Note that the user manual offered by Optrex shows the line addresses
 ; for 20 character wide displays at the bottom of page 20.
 ;
+; The LCD Data Buffer in the PIC
+;
+; The LCD's buffer is mirrored in a buffer in the PIC. This allows the LCD to be constantly
+; refreshed from the PIC buffer to correct errors. The PIC LCD buffer is a contiguous block of
+; memory, unlike the LCD's which has a chopped up address spacing (see above for details).
+; Function(s) are included in this program for finding the PIC buffer position which corresponds
+; to a specified LCD screen address.
+; 
 ; Cursor and Blinking ---
 ;
 ; The display has the capability to display a cursor and/or blink the character at the cursor
@@ -103,8 +96,11 @@
 ;
 ; These notes are nearly identical for "OPT EDM LCD PIC.ASM" and "EDM MAIN PIC.ASM". Changes to
 ; either should be copied to the other. The "LCD" version uses internal 4Mhz clock for Fosc
-; while "MAIN" uses external ???Mhz clock. Thus the timing are different for using Timer0 as
+; while "MAIN" uses external 16Mhz clock. Thus the timings are different for using Timer0 as
 ; an interrupt source.
+;
+; wip mks -- need to change this program to use 16Mhz like the Main PIC. Will have to adjust all
+; timings to make that work.
 ;
 ; The "Main" PIC sends data to the "LCD" PIC via PortA,0 (RA0). A word is sent for each 
 ; command/data value:
@@ -186,7 +182,7 @@
 ;--------------------------------------------------------------------------------------------------
 ; Configurations, etc. for the Assembler Tools and the PIC
 
-	LIST p = PIC16F648a	;select the processor
+	LIST p = PIC16F1459	;select the processor
 
     errorlevel  -306 ; Suppresses Message[306] Crossing page boundary -- ensure page bits are set.
 
@@ -197,23 +193,39 @@
 					 ;	 expected that the lower bits will be used as the lower address bits)
 
 
-#INCLUDE <P16f648a.inc> 		; Microchip Device Header File
-
-#INCLUDE <STANDARD.MAC>     	; include standard macros
+#INCLUDE <p16f1459.inc> 		; Microchip Device Header File
 
 ; Specify Device Configuration Bits
 
-	__CONFIG _INTOSC_OSC_CLKOUT & _WDT_OFF & _PWRTE_ON & _MCLRE_OFF & _BOREN_OFF & _LVP_OFF & _CPD_OFF & _CP_OFF
+; CONFIG1
+; __config 0xF9E4
+ __CONFIG _CONFIG1, _FOSC_INTOSC & _WDTE_OFF & _PWRTE_OFF & _MCLRE_OFF & _CP_OFF & _BOREN_OFF & _CLKOUTEN_OFF & _IESO_OFF & _FCMEN_OFF
+; CONFIG2
+; __config 0xFFFF
+ __CONFIG _CONFIG2, _WRT_ALL & _CPUDIV_NOCLKDIV & _USBLSCLK_48MHz & _PLLMULT_4x & _PLLEN_DISABLED & _STVREN_ON & _BORV_LO & _LPBOR_OFF & _LVP_OFF
 
-;_INTOSC_OSC_CLKOUT = uses internal oscillator, clock can be output on RA6
-;_WDT_OFF = watch dog timer is off
-;_PWRTE_ON = device will delay startup after power applied to ensure stable operation
-;_MCLRE_OFF = RA5/MCLR/VPP pin function is digital input, MCLR internally to VDD
-;_BOREN_ON = Brown Out Reset is on -- low supply voltage will cause device reset
-;_LVP_OFF = RB4/PGM is digital I/O, HV on MCLR must be used for programming
-;           (device cannot be programmed in system with low voltage)
-;_CPD_OFF = data memory is not protected and can be read from the device
-;_CP_OFF = code memory is not protected and can be read from the device
+; _FOSC_INTOSC -> internal oscillator, I/O function on CLKIN pin
+; _WDTE_OFF -> watch dog timer disabled
+; _PWRTE_OFF -> Power Up Timer disabled
+; _MCLRE_OFF -> MCLR/VPP pin is digital input
+; _CP_OFF -> Flash Program Memory Code Protection off
+; _BOREN_OFF -> Power Brown-out Reset off
+; _CLKOUTEN_OFF -> CLKOUT function off, I/O or oscillator function on CLKOUT pin
+; _IESO_OFF -> Internal/External Oscillator Switchover off
+;   (not used for this application since there is no external clock)
+; _FCMEN_OFF -> Fail-Safe Clock Monitor off
+;   (not used for this application since there is no external clock)
+; _WRT_ALL -> Flash Memory Self-Write Protection on -- no writing to flash
+;
+; _CPUDIV_NOCLKDIV -> CPU clock not divided
+; _USBLSCLK_48MHz -> only used for USB operation
+; _PLLMULT_4x -> sets PLL (if enabled) multiplier -- 4x allows software override
+; _PLLEN_DISABLED -> the clock frequency multiplier is not used
+;
+; _STVREN_ON -> Stack Overflow/Underflow Reset on
+; _BORV_LO -> Brown-out Reset Voltage Selection -- low trip point
+; _LPBOR_OFF -> Low-Power Brown-out Reset Off
+; _LVP_OFF -> Low Voltage Programming off
 ;
 ;for improved reliability, Watch Dog code can be added and the Watch Dog Timer turned on - _WDT_ON
 ;turn on code protection to keep others from reading the code from the chip - _CP_ON
@@ -357,11 +369,11 @@ BLINK_ON_FLAG			EQU		0x01
 	controlByte				; the first byte of each serial data byte pair is stored here
 	lcdData					; stores data byte to be written to the LCD
 	
-	currentCursorLocation		; the current cursor location on the display; this is the
-								; code which is sent to the display to set that location
+	currentCursorLocation	; the current cursor location on the display; this is the
+							; code which is sent to the display to set that location
 
-	currentCursorBufferPosition ; the current buffer position of the last cursor location
-								; specified by the "Main" PIC
+	currentCursorBufPosH    ; the current buffer position of the last cursor location
+    currentCursorBufPosL	;     specified by the "Main" PIC
 
 	currentLCDOnOffState	; on/off state of the LCD along with cursor on/off and
 							; blink on/off; this is code for the display to set those
@@ -443,11 +455,12 @@ BLINK_ON_FLAG			EQU		0x01
 
 	lcdOutLine				; current line being written to the display
 	lcdOutColumn			; current column to be written to the display
-    lcdBufOutPtr			; read from buffer to write to LCD pointer
-
+    lcdBufOutPtrH			; read-from buffer pointer for transfer to LCD
+    lcdBufOutPtrL
 
 	lcdInColumn				; current column being written to in the buffer
-	lcdBufInPtr				; write to buffer from master PIC pointer
+	lcdBufInPtrH			; write-to buffer from master PIC pointer
+    lcdBufInPtrL
 
  endc
 
@@ -630,11 +643,9 @@ BLINK_ON_FLAG			EQU		0x01
 	nop			            ; put at address 0x0004.
 
 ; interrupt vector at 0x0004
-; NOTE: You must save values (PUSH_MACRO) and clear PCLATH before jumping to the interrupt
-; routine - if PCLATH has bits set it will cause a jump into an unexpected program memory
-; bank.
+; NOTE: You must  clear PCLATH before jumping to the interrupt routine - if PCLATH has bits set it
+; will cause a jump into an unexpected program memory bank.
 
-	PUSH_MACRO              ; MACRO that saves required context registers
 	clrf	STATUS          ; set to known state
     clrf    PCLATH          ; set to bank 0 where the ISR is located
 
@@ -646,8 +657,6 @@ BLINK_ON_FLAG			EQU		0x01
 
 	btfss	PORTA,SERIAL_IN
 	goto	handleTimer0Interrupt
-
-	POP_MACRO               		; MACRO that restores required registers
 
 	retfie                  		; return and enable interrupts
 
@@ -667,13 +676,9 @@ setup:
 
 	; make sure both bank selection bits are set to Bank 0
 
-	bcf	    STATUS,RP0	    ; back to Bank 0
-    bcf     STATUS,RP1	    ; back to Bank 0
+    banksel INTCON
 
     clrf    INTCON          ; disable all interrupts
-
-	movlw	0x07			; turn off comparator, PortA pins set for I/O                              
- 	movwf	CMCON           ; 7 -> Comparator Control Register to disable comparator inputs
 
     movlw   0xff
     movwf   PORTA           ; 0xff -> Port A
@@ -681,7 +686,7 @@ setup:
  	movlw	0x00			                                
  	movwf	PORTB			; set Port B outputs low
 
- 	bsf 	STATUS,RP0		; select bank 1
+    banksel TRISA
 
 	movlw 	0x01                              
  	movwf 	TRISA			; 0x01 -> TRISA = PortA I/O 0000 0001 b (1=input, 0=output)
@@ -709,7 +714,7 @@ setup:
                             ; bit 1 = 0 :    000 = 1:2 scaling for Timer0 (if assigned to Timer0)
                             ; bit 0 = 0 :
 
- 	bcf 	STATUS,RP0		; select bank 0                          
+    banksel TMR0
 	
 	movlw	TIMER0_RELOAD_START_BIT_SEARCH_Q
 	movwf	TMR0
@@ -728,8 +733,7 @@ setup:
 
 	; make sure both bank selection bits are set to Bank 0
 
-	bcf	    STATUS,RP0	    ; back to Bank 0
-    bcf     STATUS,RP1	    ; back to Bank 0
+    banksel flags
 
 	movlw	.0
 	movwf	flags
@@ -763,17 +767,17 @@ start:
     
 	call    initLCD
 
-	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	call	setUpLCDCharacterBuffer
 
 	call	clearLCDLocalBuffer
 
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	call	displayGreeting
 
-	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	0xff			; 0xff in newControlByte means no new serial data
 	movwf	newControlByte	; it is changed when a new value is received
@@ -793,14 +797,14 @@ start:
 
 mainLoop:
 
-	bcf		STATUS,RP0			; select bank 0
+    banksel flags
 
 	movf	newControlByte,W	; if newControlByte is 0xff, then no new data to process
  	sublw	0xff
  	btfss	STATUS,Z
 	call	handleDataFromMainPIC
 
-	bcf		STATUS,RP0			; select bank 0
+    banksel flags
 
 	call	writeNextCharInBufferToLCD ;write one character in the buffer to the LCD
 
@@ -846,7 +850,7 @@ handleDataFromMainPIC:
  	btfsc	STATUS,Z
     goto    writeToLCDBuffer		; store byte in the local LCD character buffer
 
-	bcf		STATUS,RP0				; select bank 0
+    banksel flags
 	movf	controlByte,W			; if the control byte is 1, then the second byte is an instruction for the LCD
  	sublw	0x1
  	btfsc	STATUS,Z
@@ -925,15 +929,16 @@ notDisplayCursorBlinkCmd:
 
 writeNextCharInBufferToLCD:
 
-	bsf     STATUS,RP0      ; select data bank 1 to access LCD buffer variables
-    bsf     STATUS,IRP      ; use upper half of memory for indirect addressing of LCD buffer
+    banksel lcdBufOutPtrH
 
-    movf    lcdBufOutPtr,W  ; get pointer to next character to be written to LCD
-    movwf   FSR             ; point indirect register FSR at the character    
+    movf    lcdBufOutPtrH,W  ; get pointer to next character to be written to LCD
+    movwf   FSR0H
+    movf    lcdBufOutPtrL,W  ; get pointer to next character to be written to LCD
+    movwf   FSR0L
 
-	movf	INDF,W			; load the character
+	movf	INDF0,W			; load the character
 
-	bcf		STATUS,RP0		; select bank 0
+    banksel lcdData
 	movwf	lcdData         ; store for use by writeLCDData function
 
 	; check if cursor is blinking and is in the "off" state
@@ -944,10 +949,10 @@ writeNextCharInBufferToLCD:
 
 	; character should be off
 
-	bsf		STATUS,RP0		; select bank 1
-	movf	lcdBufOutPtr,W
-	bcf		STATUS,RP0		; select bank 0
-	subwf	currentCursorBufferPosition,W
+    banksel lcdBufOutPtrL
+	movf	lcdBufOutPtrL,W  ; only uses LSB -- buffer should not cross 256 byte boundary
+    banksel currentCursorBufPosL
+	subwf	currentCursorBufPosL,W
 	btfss	STATUS,Z
 	goto	noHideCharacter
 
@@ -958,7 +963,7 @@ noHideCharacter:
 	
     call    writeLCDData
 
-	bsf     STATUS,RP0      ; back to bank 1 
+    banksel lcdBufOutPtrH
 	call	incrementLCDOutBufferPointers
 
 	return
@@ -980,7 +985,9 @@ noHideCharacter:
 
 incrementLCDOutBufferPointers:
 
-	incf	lcdBufOutPtr,F	; point to next character in buffer
+	incf	lcdBufOutPtrL,F	; point to next character in buffer
+    btfsc   STATUS,Z		
+    incf    lcdBufOutPtrH,F
 
 	incf	lcdOutColumn,F	; track column number
 	movf	lcdOutColumn,W	; check if highest column number reached
@@ -1000,7 +1007,7 @@ incrementLCDOutBufferPointers:
 
 	call	handleEndOfRefreshTasks
 
-	bsf     STATUS,RP0      				; back to bank 1 
+    banksel lcdOutLine
 	clrf	lcdOutLine						; start over at line 0
 	call	setLCDVariablesPerLineNumber
 
@@ -1024,7 +1031,7 @@ noRollOver:
 
 handleEndOfRefreshTasks:
 
-	bcf		STATUS,RP0			; select bank 0
+    banksel flags
 
 	; refreshing the buffer moves the cursor location with each character sent
 	; set the cursor location to the last location specified by the "Main" PIC
@@ -1079,8 +1086,10 @@ setLCDVariablesPerLineNumber:
  	btfss	STATUS,Z
     goto	notLine0
 
-	movlw   lcd0			; start of line 0
-    movwf   lcdBufOutPtr
+	movlw   high lcd0		; start of line 0
+    movwf   lcdBufOutPtrH
+	movlw   low lcd0
+    movwf   lcdBufOutPtrL
 
 	movlw	LCD_COLUMN0_START
 	goto	writeLCDInstructionAndExit
@@ -1092,8 +1101,10 @@ notLine0:
  	btfss	STATUS,Z
     goto	notLine1
 
-	movlw   lcd20			; start of line 1
-    movwf   lcdBufOutPtr
+	movlw   high lcd20		; start of line 1
+    movwf   lcdBufOutPtrH
+	movlw   low lcd20
+    movwf   lcdBufOutPtrL
 
 	movlw	LCD_COLUMN1_START
 	goto	writeLCDInstructionAndExit
@@ -1105,8 +1116,10 @@ notLine1:
  	btfss	STATUS,Z
     goto	notLine2
 
-	movlw   lcd40			; start of line 2
-    movwf   lcdBufOutPtr
+	movlw   high lcd40		; start of line 2
+    movwf   lcdBufOutPtrH
+	movlw   low lcd40
+    movwf   lcdBufOutPtrL
 
 	movlw	LCD_COLUMN2_START
 	goto	writeLCDInstructionAndExit
@@ -1116,14 +1129,16 @@ notLine2:
 	; don't check if line 3 -- any number not caught above is either 3 or illegal; if illegal then default
 	; to line 3 to get things back on track
 
-	movlw   lcd60			; start of line 3
-    movwf   lcdBufOutPtr
+	movlw   high lcd60		; start of line 3
+    movwf   lcdBufOutPtrH
+	movlw   low lcd60
+    movwf   lcdBufOutPtrL
 
 	movlw	LCD_COLUMN3_START
 
 writeLCDInstructionAndExit:
 
-	bcf		STATUS,RP0				; select bank 0
+    banksel lcdData
 	movwf	lcdData					; save set address instruction code for writing
     call    writeLCDInstruction		
 
@@ -1144,21 +1159,22 @@ writeLCDInstructionAndExit:
 
 clearLCDLocalBuffer:
 
-   	bsf     STATUS,RP0      ; select data bank 1 to access LCD buffer variables
-    bsf     STATUS,IRP      ; use upper half of memory for indirect addressing of LCD buffer
+    banksel lcdScratch0      ; select data bank 1 to access LCD buffer variables
 
 	movlw	LCD_BUFFER_SIZE	; set up loop counter
 	movwf	lcdScratch0
 
-	movlw	lcd0			; point indirect register FSR at buffer start
-    movwf   FSR             
+	movlw	high lcd0		; point indirect register FSR at buffer start
+    movwf   FSR0H
+	movlw	low lcd0
+    movwf   FSR0L
 
 	movlw	' '				; fill with spaces
 
 clearLCDLoop:
 	
-	movwf	INDF			; store to each buffer location
-	incf	FSR,F
+	movwf	INDF0			; store to each buffer location
+	incf	FSR0,F
 	decfsz	lcdScratch0,F
 	goto	clearLCDLoop
 	
@@ -1179,10 +1195,12 @@ clearLCDLoop:
 
 setUpLCDCharacterBuffer:
 
-   	bsf     STATUS,RP0      ; select data bank 1 to access LCD buffer variables
+   	banksel lcdBufInPtrH     ; select data bank 1 to access LCD buffer variables
 
-	movlw   lcd0
-	movwf	lcdBufInPtr		; set write to buffer pointer from master PIC to line 0 column 0
+	movlw   high lcd0		; set write to buffer pointer from master PIC to line 0 column 0
+    movwf   lcdBufInPtrH
+	movlw   low lcd0
+    movwf   lcdBufInPtrL
 
     clrf    lcdOutLine    	; start at line 0 for writing buffer to LCD
 	clrf	lcdOutColumn	; start a column 0 for writing buffer to LCD
@@ -1212,16 +1230,20 @@ setLCDBufferWriteAddress:
 	movwf	currentCursorLocation	; store as the cursor location for later use when the
 									; display is refreshed
 
-   	bsf     STATUS,RP0      ; select data bank 1 to access LCD buffer variables
+   	banksel lcdScratch0     ; select data bank 1 to access LCD buffer variables
 
 	movwf	lcdScratch0		; store address control code in bank 1 for easy access
 
 	call	getLCDLineContainingAddress	; find which line contains the specified address
 
-	movf	lcdBufInPtr,W
- 	bcf 	STATUS,RP0					; select bank 0
-	movwf	currentCursorBufferPosition	; store as the cursor location for later use in making
-										; the character at that location blink
+	movf	lcdBufInPtrH,W          ; store as the cursor location for later use in making
+    banksel currentCursorBufPosH    ; the character at that location blink
+	movwf	currentCursorBufPosH        									
+   	banksel lcdScratch0
+    movf	lcdBufInPtrL,W
+    banksel currentCursorBufPosL
+	movwf	currentCursorBufPosL        									
+
 	return
 
 ; end of setLCDBufferWriteAddress
@@ -1278,9 +1300,7 @@ writeToLCDBuffer:
 
 	movf	lcdData,W		; get the byte to be stored
 
-   	bsf     STATUS,RP0      ; select data bank 1 to access LCD buffer variables
-    bsf     STATUS,IRP      ; use upper half of memory for indirect addressing of LCD buffer
-
+   	banksel lcdScratch0     ; select data bank 1 to access LCD buffer variables
 	movwf	lcdScratch0		; store byte in bank 1 for easy access
 
 	movf	lcdInColumn,W	; bail out if already one past the max column number
@@ -1290,13 +1310,17 @@ writeToLCDBuffer:
 
 	incf	lcdInColumn,f	; track number of bytes written to the line
 	
-    movf    lcdBufInPtr,W  	; get pointer to next memory location to be used
-    movwf   FSR             ; point FSR at the character    
+    movf    lcdBufInPtrH,W  ; get pointer to next memory location to be used
+    movwf   FSR0H           ; point FSR at the character    
+    movf    lcdBufInPtrL,W  ; get pointer to next memory location to be used
+    movwf   FSR0L           ; point FSR at the character    
 
 	movf	lcdScratch0,W	; retrieve the byte and store it in the buffer
-    movwf	INDF
+    movwf	INDF0
 
-    incf   lcdBufInPtr,F	; increment the pointer
+    incf    lcdBufInPtrL,F	; increment the pointer
+    btfsc   STATUS,Z		
+    incf    lcdBufInPtrH,F
 
 	return
 
@@ -1307,10 +1331,15 @@ writeToLCDBuffer:
 ; getLCDLineContainingAddress
 ;
 ; Returns in the W register the line containing the address specified by the control code in
-; lcdScratch0. The control byte is the value which would be sent to the LCD display to set the
+; lcdScratch0. The control code is the value which would be sent to the LCD display to set the
 ; address.
 ;
-; The lcdBufInPtr will be set to the proper memory location for storing at the specified address.
+; The lcdBufInPtr will be set to the proper buffer location for storing at the spot which mirrors
+; the specified address in the LCD buffer. The LCD buffer has a non-contiguous addressing while
+; the buffer in the PIC is contiguous, so some translation is required.
+;
+; NOTE: this function only manipulates the lower byte of the lcdBufInPtr. It is assumed that the
+; buffer does not cross a 256 byte boundary and the pointer high byte does not change.
 ;
 ; An illegal address outside the range of any line defaults to line 3.
 ;
@@ -1340,7 +1369,7 @@ getLCDLineContainingAddress:
 								; subtracting the line's start address
 	movwf	lcdInColumn			; store the column
 	addlw	lcd0				; add column to the line start's memory location
-	movwf	lcdBufInPtr			; to get the address's memory location
+	movwf	lcdBufInPtrL		; to get the address's memory location
 
 	movlw	0					; the address is in line 0
 	return
@@ -1362,7 +1391,7 @@ notLine0_GL:
 								; subtracting the line's start address
 	movwf	lcdInColumn			; store the column
 	addlw	lcd20				; add column to the line start's memory location
-	movwf	lcdBufInPtr			; to get the address's memory location
+	movwf	lcdBufInPtrL		; to get the address's memory location
 
 	movlw	1					; the address is in line 1
 	return
@@ -1384,7 +1413,7 @@ notLine1_GL:
 								; subtracting the line's start address
 	movwf	lcdInColumn			; store the column
 	addlw	lcd40				; add column to the line start's memory location
-	movwf	lcdBufInPtr			; to get the address's memory location
+	movwf	lcdBufInPtrL		; to get the address's memory location
 
 	movlw	2					; the address is in line 2
 	return
@@ -1399,7 +1428,7 @@ notLine2_GL:
 								; subtracting the line's start address
 	movwf	lcdInColumn			; store the column
 	addlw	lcd60				; add column to the line start's memory location
-	movwf	lcdBufInPtr			; to get the address's memory location
+	movwf	lcdBufInPtrL		; to get the address's memory location
 
 	movlw	3					; the address is in line 3
 	return
@@ -1424,157 +1453,157 @@ displayGreeting:
 	movlw	0x80			; move cursor to line 1 column 1 (address 0x00 / code 0x80)
 	movwf	lcdData         ;   (bit 7 = 1 specifies address set command, bits 6:0 are the address)
     call	setLCDBufferWriteAddress
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'O'				; display "OPT EDM" on the first line
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'P'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'T'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	' '
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'E'                             
 	movwf 	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'D'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'M'                     
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	0xc1			; move cursor to line 2 column 2 (address 41h)
 	movwf	lcdData         ;   (bit 7 = 1 specifies address set command, bits 6:0 are the address)
     call	setLCDBufferWriteAddress
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'N'				; display "Notcher" on the second line
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'o'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	't'                            
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'c'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'h'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'e'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'r'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	0x96			; move cursor to line 3 column 7 (address 16h)
 	movwf	lcdData			;   (bit 7 = 1 specifies address set command, bits 6:0 are the address)
     call	setLCDBufferWriteAddress
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'b'				; display "by CMP" on the third line
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'y'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	' '  
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'M'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'K'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'S'
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	0xd7			; move cursor to line 4 column 8 (address 57h)
 	movwf	lcdData			;   (bit 7 = 1 specifies address set command, bits 6:0 are the address)
     call	setLCDBufferWriteAddress
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'R'				; display "Rev 2.7" on the fourth line
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'e'                            
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'v'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	' '                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'2'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
  	movlw	'.'                             
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	movlw	'1'
 	movwf	lcdData                             
     call    writeToLCDBuffer
- 	bcf 	STATUS,RP0		; select bank 0
+    banksel flags
 
 	return
 
@@ -1822,192 +1851,6 @@ strobeE:
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
-; readFromEEprom
-; 
-; Read block of bytes from EEprom.
-;
-; Address in EEprom from which to read first byte should be in eepromAddress.
-; Number of bytes to read should be in eepromCount.
-; Indirect register (FSR) should point to first byte in RAM to be written into.
-; The block of bytes will be copied from EEprom to RAM.
-;
-; NOTE: This function must be modified for use with PIC16F876 - look for
-;  notes in the function referring to PIC16F876 for details
-; 
-; STATUS:IRP is modified
-;
-
-readFromEEprom:
-
-loopRFE1:
-
-	movf	eepromAddress,W	; load EEprom address from which to read
-	incf	eepromAddress,F	; move to next address in EEprom	
-	    
-    bcf     STATUS,IRP      ; use lower half of memory for indirect addressing of debug buffer
-
-    bsf	    STATUS,RP0		; select bank 1 [for PIC16F648]
-    ;bsf    STATUS,RP1		; select bank 2 [for PIC16F876]
-	
-    movwf	EEADR			; place in EEprom read address register
-
-	;bsf    STATUS,RP0		; select bank 3 [for PIC16F876]
-	;bcf    EECON1,EEPGD	; read from EEprom (as opposed to Flash) [for PIC16F876]
-	bsf	    EECON1,RD		; perform EEProm read
-
-	;bcf	STATUS,RP0	    ; select bank 2 [for PIC16F876]
-	movf	EEDATA,W		; move data read into w
-	movwf   INDF			; write to RAM
-	incf	FSR,F			; move to next address in RAM
-
-	bcf	STATUS,RP0		    ; select bank 0
-	bcf	STATUS,RP1
-
-	decfsz	eepromCount,F	; count down number of bytes transferred
-	goto	loopRFE1		; not zero yet - read more bytes
-
-	return
-
-; end of readFromEEprom
-;--------------------------------------------------------------------------------------------------
-
-;--------------------------------------------------------------------------------------------------
-; writeToEeprom
-;
-; Writes block of bytes to EEprom.
-;
-; Address in EEprom to store first byte should be in eepromAddress.
-; Number of bytes to write should be in eepromCount.
-; Indirect register (FSR) should point to first byte in RAM to be written.
-; The block of bytes will be copied from RAM to EEprom.
-;
-; STATUS:IRP is modified
-;
-
-writeToEEprom:
-
-loopWTE1:	
-    
-    bcf     STATUS,IRP      ; use lower half of memory for indirect addressing of debug buffer
-
-    movf	eepromAddress,W	; load EEprom address at which to store
-	incf	eepromAddress,F	; move to next address in EEprom	
-
-    bsf	    STATUS,RP0		; select bank 1 [for PIC16F648]
-    ;bsf    STATUS,RP1		; select bank 2 [for PIC16F876]
-	
-	movwf	EEADR			; place in EEprom write address register
-
-	movf	INDF,W			; get first byte of block from RAM
-	incf	FSR,F			; move to next byte in RAM
-	movwf	EEDATA			; store in EEprom write data register
-
-	;bsf	STATUS,RP0		; select bank 3 [for PIC16F876]
-    ;bcf	EECON1,EEPGD	; write to EEprom (as opposed to Flash) [for PIC16F876]
-	bsf	    EECON1,WREN		; enable EEprom write
-	bcf	    INTCON,GIE		; disable all interrupts
-	
-	movlw	0x55
-	movwf	EECON2			; put 0x55 into EECON2
-	movlw	0xaa
-	movwf	EECON2			; put 0xaa into EECON2
-	bsf	    EECON1,WR	  	; begin the write process
-
-waitWTE1:	
-    
-    btfsc	EECON1,WR		; loop until WR bit goes low (write finished)
-	goto	waitWTE1
-
-	bcf	EECON1,WREN		    ; disable writes
-	bsf	INTCON,GIE		    ; re-enable interrupts
-
-	bcf	STATUS,RP0		    ; select bank 0
-	bcf	STATUS,RP1
-
-	decfsz	eepromCount,F	; count down number of bytes transferred
-	goto	loopWTE1        ; not zero yet - write more bytes
-
-	return
-
-; end of writeToEEprom
-;--------------------------------------------------------------------------------------------------
-
-;--------------------------------------------------------------------------------------------------
-; debug
-;
-; Stores several bytes (number specified by debugCounter) in eeprom for later viewing.
-;
-; Specified number of bytes in debugCounter are first stored in memory then copied to eeprom
-; all at once. This eliminates the lengthy time delay for writing to eeprom being inserted into
-; program flow -- the delays all happen at the end of the capture when the block is written to
-; eeprom.
-;
-; STATUS:IRP is modified
-;
-                                 
-debug:
-	
-    bcf     STATUS,IRP      ; use lower half of memory for indirect addressing of debug buffer
-
-	bcf		STATUS,RP0				; select bank 0
-
-	movf	debugCounter,W			; if counter is zero, do not store any more
- 	sublw	0
- 	btfsc	STATUS,Z
-	goto	storeDebugDataInEEprom
-
-	decf	debugCounter,F
-
-    movf    debugPointer,W
-    movwf   FSR           
-
-	movf	controlByte,W
-	movwf	INDF
-	incf	FSR,F
-
-	movf	lcdData,W
-	movwf	INDF
-	incf	FSR,F
-
-	movf	FSR,W
-	movwf	debugPointer
-
-	return
-
-storeDebugDataInEEprom:
-
-	movf	debugPointer,W			; if pointer has been set to zero, already stored to eeprom so skip
- 	sublw	0
- 	btfsc	STATUS,Z
-	return
-
-	movlw	.0
-	movwf	debugPointer
-
-;eepromAddress set to zero by setup code -- will get incremented by each
-;call to writeToEEprom
-
-	movlw	eeScratch0		; beginning of storage buffer in eeprom
-	movwf	eepromAddress
-
-    movlw   db0        		; address in RAM
-    movwf   FSR
-
-    movlw   .30
-    movwf   eepromCount     ; write 1 byte
-
-    call    writeToEEprom
-
-	return
-
-debugFreeze:
-
-	goto	debugFreeze
-
-; end of debug
-;--------------------------------------------------------------------------------------------------
-
-;--------------------------------------------------------------------------------------------------
 ; handleInterrupt
 ;
 ; NOT USED -- handleInterrupt is skipped in this program -- see note in this file:
@@ -2041,8 +1884,6 @@ INT_ERROR_LP1:		        		; NO, do error recovery
                                		; but there were no expected interrupts
 
 endISR:
-
-	POP_MACRO               		; MACRO that restores required registers
 
 	retfie                  		; Return and enable interrupts
 
@@ -2160,8 +2001,6 @@ bitLoop3:
 	movlw	TIMER0_RELOAD_START_BIT_SEARCH
 	movwf	TMR0
 	bcf 	INTCON,T0IF     	; clear the Timer0 overflow interrupt flag
-
-	POP_MACRO               	; MACRO that restores required registers
 
 	retfie                  	; Return and enable interrupts
 
