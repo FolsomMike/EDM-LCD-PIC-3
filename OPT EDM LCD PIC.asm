@@ -127,7 +127,7 @@
 ; each serial bit from the Main PIC is 64 uS wide 
 ;
 ; a single instruction cycle (a nop) on the "LCD" PIC is 1uS wide
-; a goto instruction is 3uS
+; a goto instruction is 2uS
 ; a simple decfsz loop can be used for bit to bit timing
 ;
 ; Loop Code Timing
@@ -674,6 +674,8 @@ BLINK_ON_FLAG			EQU		0x01
 
 setup:
 
+    call    setupClock      ; set system clock source and frequency
+
 	; make sure both bank selection bits are set to Bank 0
 
     banksel INTCON
@@ -750,6 +752,40 @@ setup:
 	return
 
 ; end of setup
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setupClock
+;
+; Sets up the system clock source and frequency (Fosc).
+;
+; Instruction cycle rate is Fosc/4.
+;
+; Assumes clock related configuration bits are set as follows:
+;
+;   _FOSC_INTOSC,  _CPUDIV_NOCLKDIV, _PLLMULT_4x, _PLLEN_DISABLED
+;
+; Assumes all programmable clock related options are at Reset default values.
+;
+; NOTE: Adjust I2C baud rate generator value when Fosc is changed.
+;
+; wip mks -- need to change to 16Mhz and change all timing code as necessary 
+;
+
+setupClock:
+
+    ; choose internal clock frequency of 4 Mhz ~ IRCF<3:0> = 1101
+
+    banksel OSCCON
+
+    bsf     OSCCON, IRCF0
+    bcf     OSCCON, IRCF1
+    bsf     OSCCON, IRCF2
+    bsf     OSCCON, IRCF3
+
+    return
+
+; end of setupClock
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
