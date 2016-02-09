@@ -62,7 +62,7 @@
 ; memory, unlike the LCD's which has a chopped up address spacing (see above for details).
 ; Function(s) are included in this program for finding the PIC buffer position which corresponds
 ; to a specified LCD screen address.
-; 
+;
 ; Cursor and Blinking ---
 ;
 ; The display has the capability to display a cursor and/or blink the character at the cursor
@@ -102,7 +102,7 @@
 ; wip mks -- need to change this program to use 16Mhz like the Main PIC. Will have to adjust all
 ; timings to make that work.
 ;
-; The "Main" PIC sends data to the "LCD" PIC via PortA,0 (RA0). A word is sent for each 
+; The "Main" PIC sends serial data to the "LCD" PIC via an input port pin. A word is sent for each
 ; command/data value:
 ;
 ; Data Format --
@@ -124,7 +124,7 @@
 ;
 ; Serial Timing --
 ;
-; each serial bit from the Main PIC is 64 uS wide 
+; each serial bit from the Main PIC is 64 uS wide
 ;
 ; a single instruction cycle (a nop) on the "LCD" PIC is 1uS wide
 ; a goto instruction is 2uS
@@ -145,7 +145,7 @@
 ;  2 -> 5 uS
 ;  3 -> 8 uS (each additional count -> 3 uS)
 ; 21 -> 64 uS  ~ ((64 - 5) / 3) + 2
-; 
+;
 ; in actual use: 19 gives the closest result taking all loop cycles into account
 ;
 ; Version 1.0 of the LCD PIC code read the word all at one time and then transmitted to the display
@@ -235,15 +235,24 @@
 
 ;--------------------------------------------------------------------------------------------------
 ; Hardware Definitions
+;
+; The ports are defined with suffix _P while the latches are defined with _L.
+; Read from the ports (movf, btfss, btfsc, etc.).
+; Write to the latches (movw, bcf, bsf, etc.)
+;
 
-LCD_CTRL        EQU     0x05		; PORTA
-SERIAL_IN		EQU		0x00		; RA0 - serial data from Main PIC
-LCD_E           EQU     0x01		; RA1 - data read/write strobe
-LCD_RS			EQU		0x02		; RA2 - instruction/data register select
-UNUSED1			EQU		0x03		; RA3 - no used in application -- useful for debugging output
-UNUSED2			EQU		0X04		; RA4 - no used in application -- useful for debugging output
+LCD_RW_RS_L     EQU     LATA
+LCD_E_L         EQU     LATB
+SERIAL_IN_P     EQU     PORTA
+SERIAL_OUT_L    EQU     LATB
+LCD_DATA_OUT_L  EQU     LATC
+LCD_DATA_IN_P   EQU     PORTC
 
-LCD_DATA        EQU     0x06		; PORTB
+SERIAL_IN       EQU     RA0         ; serial data in from Main PIC
+LCD_RW          EQU     RA4         ; data read/write mode control
+LCD_RS          EQU     RA5         ; instruction/data register select
+LCD_E           EQU     RB5         ; data read/write strobe
+SERIAL_OUT      EQU     RB7         ; serial data out to Main PIC
 
 ; end of Hardware Definitions
 ;--------------------------------------------------------------------------------------------------
@@ -350,7 +359,7 @@ BLINK_ON_FLAG			EQU		0x01
 ; Note that you cannot use a lot of the data definition directives for RAM space (such as DB)
 ; unless you are compiling object files and using a linker command file.  The cblock directive is
 ; commonly used to reserve RAM space or Code space when producing "absolute" code, as is done here.
-; 
+;
 
 ; Assign variables in RAM - Bank 0 - must set RP0:RP1 to 0:0 to access
 ; Bank 0 has 80 bytes of free space
@@ -368,7 +377,7 @@ BLINK_ON_FLAG			EQU		0x01
 
 	controlByte				; the first byte of each serial data byte pair is stored here
 	lcdData					; stores data byte to be written to the LCD
-	
+
 	currentCursorLocation	; the current cursor location on the display; this is the
 							; code which is sent to the display to set that location
 
@@ -382,7 +391,7 @@ BLINK_ON_FLAG			EQU		0x01
 
 	smallDelayCnt			; used to count down for small delay
 	bigDelayCnt				; used to count down for big delay
-	
+
 	scratch0				; scratch pad variable
 	scratch1				; scratch pad variable
 	scratch2				; scratch pad variable
@@ -398,7 +407,7 @@ BLINK_ON_FLAG			EQU		0x01
 
 	; end of variables ONLY written to by interrupt code
 
-	
+
     eepromAddress		    ; use to specify address to read or write from EEprom
     eepromCount	        	; use to specify number of bytes to read or write from EEprom
 
@@ -445,7 +454,7 @@ BLINK_ON_FLAG			EQU		0x01
  cblock 0xa0                ; starting address
 
     lcdFlags                ; bit 0: 0 = not used, 1 = not used
-                            ; bit 1: 
+                            ; bit 1:
                             ; bit 2:
                             ; bit 3:
                             ; bit 4:
@@ -480,7 +489,7 @@ BLINK_ON_FLAG			EQU		0x01
 ; see "LCD ADDRESSING NOTE" in header notes at top of page for addressing explanation
 
 ; WARNING -- the buffer entirely fills Bank 2 -- do not add any variables to this bank
-	
+
  cblock 0x120		; starting address
 
 	; line 1
@@ -580,25 +589,20 @@ BLINK_ON_FLAG			EQU		0x01
 ; WARNING -- the buffer entirely fills Bank 2 -- do not add any variables to this bank
 
 ;-----------------
- 
-; Define variables in the memory which is mirrored in all 4 RAM banks.  This area is usually used
-; by the interrupt routine for saving register states because there is no need to worry about
-; which bank is current when the interrupt is invoked.
-; On the PIC16F628A, 0x70 thru 0x7f is mirrored in all 4 RAM banks.
 
-; NOTE:
-; This block cannot be used in ANY bank other than by the interrupt routine.
-; The mirrored sections:
+; Define variables in the memory which is mirrored in all RAM banks.
+;
+; On older PICs, this section was used to store context registers during an interrupt as the
+; current bank was unknown upon entering the interrupt. Now, the section can be used for any
+; purpose as the more powerful PICs automatically save the context on interrupt.
 ;
 ;	Bank 0		Bank 1		Bank 2		Bank3
 ;	70h-7fh		f0h-ffh		170h-17fh	1f0h-1ffh
 ;
 
  cblock	0x70
-    W_TEMP
-    FSR_TEMP
-    STATUS_TEMP
-    PCLATH_TEMP	
+
+ 
  endc
 
 ;-----------------
@@ -613,7 +617,7 @@ BLINK_ON_FLAG			EQU		0x01
 ;
 
  cblock 	0x0      	; Variables start in RAM at 0x0
-	
+
 	eeScratch0
     eeScratch1
 	eeScratch2
@@ -655,7 +659,8 @@ BLINK_ON_FLAG			EQU		0x01
 
 	; data bank 0 already selected by clearing STATUS above
 
-	btfss	PORTA,SERIAL_IN
+    banksel SERIAL_IN_P
+	btfss	SERIAL_IN_P,SERIAL_IN
 	goto	handleTimer0Interrupt
 
 	retfie                  		; return and enable interrupts
@@ -674,37 +679,23 @@ BLINK_ON_FLAG			EQU		0x01
 
 setup:
 
-    call    setupClock      ; set system clock source and frequency
-
-	; make sure both bank selection bits are set to Bank 0
-
     banksel INTCON
-
     clrf    INTCON          ; disable all interrupts
 
-    movlw   0xff
-    movwf   PORTA           ; 0xff -> Port A
+    call    setupClock      ; set system clock source and frequency
 
- 	movlw	0x00			                                
- 	movwf	PORTB			; set Port B outputs low
+    call    setupPortA
 
-    banksel TRISA
+    banksel LCD_RW_RS_L
+    bcf		LCD_RW_RS_L,LCD_RW  ; set LCD R/W low to select write to LCD mode
+    bcf		LCD_RW_RS_L,LCD_RS	; set LCD Register Select low (chooses instruction register)
 
-	movlw 	0x01                              
- 	movwf 	TRISA			; 0x01 -> TRISA = PortA I/O 0000 0001 b (1=input, 0=output)
-    						;	RA0 - Input : receives serial input data
-							;	RA1 - Output: E strobe to initiate LCD R/W
-							;	RA2 - Output: Register Select for LCD
-							;	RA3 - Output: unused (pulled high for some reason)
-							;	RA4 - Output: unused (pulled high for some reason)
-							;	RA5 - Vpp for PIC programming, unused otherwise
-							;	RA6 - unused (unconnected)
-							;	RA7 - unused (unconnected)
- 	movlw 	0x00
- 	movwf	TRISB			; 0x00 -> TRISB = PortB I/O 0000 0000 b (1=input, 0=output)
-							;	port B outputs data to the LCD display
-							; 	RB6 is also used for programming the PIC
-							; 	RB7 is also used for programming the PIC
+    call    setupPortB
+
+    banksel LCD_E_L
+ 	bcf		LCD_E_L,LCD_E       ; set LCD E strobe low (inactive)
+
+    call    setupPortC
 
 	movlw	0x58			; set options 0101 1000 b
 	movwf	OPTION_REG		; bit 7 = 0: PORTB pull-ups are enabled by individual port latch values
@@ -717,29 +708,21 @@ setup:
                             ; bit 0 = 0 :
 
     banksel TMR0
-	
+
 	movlw	TIMER0_RELOAD_START_BIT_SEARCH_Q
 	movwf	TMR0
 
- 	bcf		PORTA,LCD_E     ; set LCD E strobe low (inactive)
-	bcf		PORTA,LCD_RS	; set LCD Register Select low (chooses instruction register)
-	bsf		PORTA,UNUSED1	; set high to match pullup (unused)
-	bcf		PORTA,UNUSED2   ; set high to match pullup (unused)
-
 ; enable the interrupts
-
 
 	bsf	    INTCON,PEIE	    ; enable peripheral interrupts (Timer0 is a peripheral)
     bsf     INTCON,T0IE     ; enabe TMR0 interrupts
     bsf     INTCON,GIE      ; enable all interrupts
 
-	; make sure both bank selection bits are set to Bank 0
-
     banksel flags
 
 	movlw	.0
 	movwf	flags
-	
+
 	movlw	CURSOR_BLINK_RATE		; preset blink rate timer
 	movwf	charBlinkRate
 
@@ -769,7 +752,7 @@ setup:
 ;
 ; NOTE: Adjust I2C baud rate generator value when Fosc is changed.
 ;
-; wip mks -- need to change to 16Mhz and change all timing code as necessary 
+; wip mks -- need to change to 16Mhz and change all timing code as necessary
 ;
 
 setupClock:
@@ -789,6 +772,126 @@ setupClock:
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
+; setupPortA
+;
+; Sets up Port A for I/O operation.
+;
+; NOTE: Writing to PORTA is same as writing to LATA for PIC16f1459. The code example from the
+; data manual writes to both on initialization -- probably to be compatible with other PIC chips.
+;
+; NOTE: RA0, RA1 and RA3 can only be inputs on the PIC16f1459 device.
+;       RA2, RA6, RA7 are not implemented.
+;
+
+setupPortA:
+
+    banksel WPUA
+    movlw   b'00000000'                 ; disable weak pull-ups
+    movwf   WPUA
+
+    banksel PORTA
+    clrf    PORTA                       ; init port value
+
+    banksel LATA                        ; init port data latch
+    clrf    LATA
+
+    banksel ANSELA
+    clrf    ANSELA                      ; setup port for all digital I/O
+
+    ; set I/O directions
+
+    banksel TRISA
+    movlw   b'11111111'                 ; first set all to inputs
+    movwf   TRISA
+
+    ; set direction for each pin used
+
+    bsf     TRISA, SERIAL_IN            ; input
+    bcf     TRISA, LCD_RW               ; output
+    bcf     TRISA, LCD_RS               ; output
+    bcf     TRISA, RA1                  ; input - unused - pulled up via external resistor
+
+    return
+
+; end of setupPortA
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setupPortB
+;
+; Sets up Port B for I/O operation.
+;
+; NOTE: Writing to PORTB is same as writing to LATB for PIC16f1459. The code example from the
+; data manual writes to both on initialization -- probably to be compatible with other PIC chips.
+;
+; NOTE: RB0, RB1, RB2, RB3 are not implemented on the PIC16f1459 device.
+;
+
+setupPortB:
+
+    banksel WPUB
+    movlw   b'00000000'                 ; disable weak pull-ups
+    movwf   WPUB
+
+    banksel PORTB
+    clrf    PORTB                       ; init port value
+
+    banksel LATB                        ; init port data latch
+    clrf    LATB
+
+    banksel SERIAL_OUT_L
+    bsf     SERIAL_OUT_L,SERIAL_OUT     ; initialize SERIAL_OUT high before changing pin to output
+                                        ; so a start bit won't be transmitted
+    banksel ANSELB
+    clrf    ANSELB                      ; setup port for all digital I/O
+
+    ; set I/O directions
+
+    banksel TRISB
+    movlw   b'11111111'                 ; first set all to inputs
+    movwf   TRISB
+
+    return
+
+; end of setupPortB
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setupPortC
+;
+; Sets up Port C for I/O operation.
+;
+; NOTE: Writing to PORTC is same as writing to LATC for PIC16f1459. The code example from the
+; data manual writes to both on initialization -- probably to be compatible with other PIC chips.
+;
+; For this program, PortC is the LCD data bus.
+;
+
+setupPortC:
+
+    ; Port C does not have a weak pull-up register
+
+    banksel PORTC
+    clrf    PORTC                       ; init port value
+
+    banksel LATC
+    clrf    LATC                        ; init port data latch
+
+    banksel ANSELC
+    clrf    ANSELC                      ; setup port for all digital I/O
+
+    ; set I/O directions
+
+    banksel TRISC
+    movlw   b'00000000'                 ; set all to outputs
+    movwf   TRISC
+
+    return
+
+; end of setupPortC
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
 ; Main Code
 ;
 ; Sets up the PIC, the LCD, displays a greeting, then monitors the serial data input line from
@@ -800,7 +903,7 @@ start:
 	call	setup			; set up main variables and hardware
 
    	call    bigDelay		; should wait more than 15ms after Vcc = 4.5V
-    
+
 	call    initLCD
 
     banksel flags
@@ -866,9 +969,9 @@ mainLoop:
 ;
 
 handleDataFromMainPIC:
-	
+
 	;copy the values to working variables so interrupt routine can use new variables
-	
+
 	movf	newControlByte,W
 	movwf	controlByte
 	movf	newLCDData,W
@@ -925,9 +1028,9 @@ notClearScreenCmd:
 
 	; check for address change instruction
 
-    btfss   lcdData,ADDRESS_SET_BIT	
+    btfss   lcdData,ADDRESS_SET_BIT
 	goto	notAddressChangeCmd
-	
+
 	goto	setLCDBufferWriteAddress
 
 notAddressChangeCmd:
@@ -993,10 +1096,10 @@ writeNextCharInBufferToLCD:
 	goto	noHideCharacter
 
 	movlw	' '
-	movwf	lcdData         ; store for use by writeLCDData function	
+	movwf	lcdData         ; store for use by writeLCDData function
 
 noHideCharacter:
-	
+
     call    writeLCDData
 
     banksel lcdBufOutPtrH
@@ -1022,7 +1125,7 @@ noHideCharacter:
 incrementLCDOutBufferPointers:
 
 	incf	lcdBufOutPtrL,F	; point to next character in buffer
-    btfsc   STATUS,Z		
+    btfsc   STATUS,Z
     incf    lcdBufOutPtrH,F
 
 	incf	lcdOutColumn,F	; track column number
@@ -1058,7 +1161,7 @@ noRollOver:
 ; handleEndOfRefreshTasks
 ;
 ; Performs tasks required at the end of a refresh such as setting cursor and blink on/off states.
-; 
+;
 ; Note: The cursor and blink functions of the display are not used -- the PIC code handles those
 ; functions. See notes "Cursor and Blinking" in this file.
 ;
@@ -1176,7 +1279,7 @@ writeLCDInstructionAndExit:
 
     banksel lcdData
 	movwf	lcdData					; save set address instruction code for writing
-    call    writeLCDInstruction		
+    call    writeLCDInstruction
 
 	return
 
@@ -1208,12 +1311,12 @@ clearLCDLocalBuffer:
 	movlw	' '				; fill with spaces
 
 clearLCDLoop:
-	
+
 	movwf	INDF0			; store to each buffer location
 	incf	FSR0,F
 	decfsz	lcdScratch0,F
 	goto	clearLCDLoop
-	
+
 	call	setUpLCDCharacterBuffer
 
 	return
@@ -1252,7 +1355,7 @@ setUpLCDCharacterBuffer:
 ; setLCDBufferWriteAddress
 ;
 ; Sets the LCD buffer write pointer according to the address in lcdData. This value is the
-; control code that would be written to the LCD display to set an address. 
+; control code that would be written to the LCD display to set an address.
 ;
 ; see "LCD ADDRESSING NOTE" in header notes at top of page for addressing explanation
 ;
@@ -1274,11 +1377,11 @@ setLCDBufferWriteAddress:
 
 	movf	lcdBufInPtrH,W          ; store as the cursor location for later use in making
     banksel currentCursorBufPosH    ; the character at that location blink
-	movwf	currentCursorBufPosH        									
+	movwf	currentCursorBufPosH
    	banksel lcdScratch0
     movf	lcdBufInPtrL,W
     banksel currentCursorBufPosL
-	movwf	currentCursorBufPosL        									
+	movwf	currentCursorBufPosL
 
 	return
 
@@ -1340,22 +1443,22 @@ writeToLCDBuffer:
 	movwf	lcdScratch0		; store byte in bank 1 for easy access
 
 	movf	lcdInColumn,W	; bail out if already one past the max column number
- 	sublw	PAST_MAX_COLUMN	
- 	btfsc	STATUS,Z	
+ 	sublw	PAST_MAX_COLUMN
+ 	btfsc	STATUS,Z
 	return
 
 	incf	lcdInColumn,f	; track number of bytes written to the line
-	
+
     movf    lcdBufInPtrH,W  ; get pointer to next memory location to be used
-    movwf   FSR0H           ; point FSR at the character    
+    movwf   FSR0H           ; point FSR at the character
     movf    lcdBufInPtrL,W  ; get pointer to next memory location to be used
-    movwf   FSR0L           ; point FSR at the character    
+    movwf   FSR0L           ; point FSR at the character
 
 	movf	lcdScratch0,W	; retrieve the byte and store it in the buffer
     movwf	INDF0
 
     incf    lcdBufInPtrL,F	; increment the pointer
-    btfsc   STATUS,Z		
+    btfsc   STATUS,Z
     incf    lcdBufInPtrH,F
 
 	return
@@ -1395,7 +1498,7 @@ getLCDLineContainingAddress:
     btfss   STATUS,C			; c = 0 = borrow = address<*_START
     goto	notLine0_GL
 
-	movf	lcdScratch0,W		; compare address	
+	movf	lcdScratch0,W		; compare address
 	sublw	LCD_COLUMN0_END		; address <= *_END?
     btfss   STATUS,C			; c = 0 = borrow = address>*_END
     goto	notLine0_GL
@@ -1417,7 +1520,7 @@ notLine0_GL:
     btfss   STATUS,C			; c = 0 = borrow = address<*_START
     goto	notLine1_GL
 
-	movf	lcdScratch0,W		; compare address	
+	movf	lcdScratch0,W		; compare address
 	sublw	LCD_COLUMN1_END		; address <= *_END?
     btfss   STATUS,C			; c = 0 = borrow = address>*_END
     goto	notLine1_GL
@@ -1439,7 +1542,7 @@ notLine1_GL:
     btfss   STATUS,C			; c = 0 = borrow = address<*_START
     goto	notLine2_GL
 
-	movf	lcdScratch0,W		; compare address	
+	movf	lcdScratch0,W		; compare address
 	sublw	LCD_COLUMN2_END		; address <= *_END?
     btfss   STATUS,C			; c = 0 = borrow = address>*_END
     goto	notLine2_GL
@@ -1492,37 +1595,37 @@ displayGreeting:
     banksel flags
 
 	movlw	'O'				; display "OPT EDM" on the first line
-	movwf	lcdData                             
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'P'                             
-	movwf	lcdData                             
+	movlw	'P'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'T'                             
-	movwf	lcdData                             
+	movlw	'T'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
 	movlw	' '
-	movwf	lcdData                             
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'E'                             
-	movwf 	lcdData                             
+	movlw	'E'
+	movwf 	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'D'                             
-	movwf	lcdData                             
+	movlw	'D'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'M'                     
-	movwf	lcdData                             
+	movlw	'M'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
@@ -1532,37 +1635,37 @@ displayGreeting:
     banksel flags
 
 	movlw	'N'				; display "Notcher" on the second line
-	movwf	lcdData                             
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'o'                             
-	movwf	lcdData                             
+	movlw	'o'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	't'                            
-	movwf	lcdData                             
+	movlw	't'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'c'                             
-	movwf	lcdData                             
+	movlw	'c'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'h'                             
-	movwf	lcdData                             
+	movlw	'h'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'e'                             
-	movwf	lcdData                             
+	movlw	'e'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'r'                             
-	movwf	lcdData                             
+	movlw	'r'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
@@ -1572,32 +1675,32 @@ displayGreeting:
     banksel flags
 
 	movlw	'b'				; display "by CMP" on the third line
-	movwf	lcdData                             
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'y'                             
-	movwf	lcdData                             
+	movlw	'y'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	' '  
-	movwf	lcdData                             
+	movlw	' '
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'M'                             
-	movwf	lcdData                             
+	movlw	'M'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'K'                             
-	movwf	lcdData                             
+	movlw	'K'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
 	movlw	'S'
-	movwf	lcdData                             
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
@@ -1607,37 +1710,37 @@ displayGreeting:
     banksel flags
 
 	movlw	'R'				; display "Rev 2.7" on the fourth line
-	movwf	lcdData                             
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'e'                            
-	movwf	lcdData                             
+	movlw	'e'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'v'                             
-	movwf	lcdData                             
+	movlw	'v'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	' '                             
-	movwf	lcdData                             
+	movlw	' '
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'2'                             
-	movwf	lcdData                             
+	movlw	'2'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
- 	movlw	'.'                             
-	movwf	lcdData                             
+ 	movlw	'.'
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
 	movlw	'1'
-	movwf	lcdData                             
+	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
 
@@ -1656,46 +1759,55 @@ displayGreeting:
 
 initLCD:
 
-	bcf		LCD_CTRL,LCD_E		; LCD E strobe low                          
-	bcf		LCD_CTRL, LCD_RS    ; LCD RS low (instruction register selected)                       
+    banksel LCD_E_L
+	bcf		LCD_E_L,LCD_E		; LCD E strobe low
+    banksel LCD_RW_RS_L
+	bcf		LCD_RW_RS_L,LCD_RS  ; LCD RS low (instruction register selected)
     call    smallDelay			; wait a bit
 
 	movlw	0x30				; 1st send of Function Set Command: (8-Bit interface)(BF cannot be checked before this command.)
-	movwf	LCD_DATA			; prepare to write                   
+    banksel	LCD_DATA_OUT_L
+	movwf	LCD_DATA_OUT_L		; prepare to write
     call    strobeE				; write to LCD
     call    bigDelay			; should wait more than 4.1ms
 
 	movlw	0x30				; 2nd send of Function Set Command: (8-Bit interface)(BF cannot be checked before this command.)
-	movwf	LCD_DATA			; prepare to write                   
+	banksel	LCD_DATA_OUT_L
+    movwf	LCD_DATA_OUT_L		; prepare to write
     call    strobeE				; write to LCD
     call    smallDelay			; should wait more than 100us
 
 	movlw	0x30				; 3rd send of Function Set Command: (8-Bit interface)(BF can be checked after this command)
-	movwf	LCD_DATA			; prepare to write	(BF busy flag cannot be checked on this board because R/W line is tied low)
+    banksel	LCD_DATA_OUT_L
+	movwf	LCD_DATA_OUT_L		; prepare to write	(BF busy flag cannot be checked on this board because R/W line is tied low)
     call    strobeE				; write to LCD
     call    smallDelay			; wait for a bit because BF (busy flag) cannot be checked on this board
 
 	movlw	0x38				; write 0011 1000 Function Set Command ~ multi line display with 5x7 dot font
-	movwf	LCD_DATA			;  0011 in upper nibble specifies Function Set Command
+    banksel	LCD_DATA_OUT_L
+	movwf	LCD_DATA_OUT_L		;  0011 in upper nibble specifies Function Set Command
     call    strobeE				;  bit 3: 0 = 1 line display, 1 = multi-line display
 								;  bit 2: 0 = 5x7 dot font, 1 = 5 x 10 dot font
 	call    smallDelay			; wait for a bit because BF (busy flag) cannot be checked on this board
 
 	movlw	0x0c				; write 0000 1000 ~ Display Off
-	movwf	LCD_DATA			;  bit 3: specifies display on/off command
+    banksel	LCD_DATA_OUT_L
+	movwf	LCD_DATA_OUT_L		;  bit 3: specifies display on/off command
     call    strobeE				;  bit 2: 0 = display off, 1 = display on
 	call    smallDelay			; wait for a bit because BF (busy flag) cannot be checked on this board
 								; NOTE: LCD user manual instructs to turn off display here with 0x08
 								;  but this did NOT work. Unknown why.
 
 	movlw	0x01				; write 0000 0001 ~ Clear Display
-	movwf	LCD_DATA
+    banksel	LCD_DATA_OUT_L
+	movwf	LCD_DATA_OUT_L
     call    strobeE
 	call    smallDelay			; wait for a bit because BF (busy flag) cannot be checked on this board
 								; NOTE: clear display added by MKS to match suggested setup in LCD user manual
 
 	movlw	0x06				; write 0000 0110 ~ Entry Mode Set, increment mode, no display shift
-	movwf	LCD_DATA			; bits 3:2 = 0:1 : specifies Entry Mode Set
+    banksel	LCD_DATA_OUT_L
+	movwf	LCD_DATA_OUT_L		; bits 3:2 = 0:1 : specifies Entry Mode Set
     call    strobeE				; bit 1: 0 = no increment, 1 = increment mode; bit 0: 0 = no shift, 1 = shift display
 	call    smallDelay			; wait for a bit because BF (busy flag) cannot be checked on this board
 								; NOTE: Entry Mode Set was being done after display on -- moved by MKS to match
@@ -1705,7 +1817,8 @@ initLCD:
 								; suggestions?
 
 	movlw	0x0c				; write 0000 1100 ~ Display On, cursor off, blink off
-	movwf	LCD_DATA			;  bit 3: specifies display on/off command
+    banksel	LCD_DATA_OUT_L
+	movwf	LCD_DATA_OUT_L      ;  bit 3: specifies display on/off command
     call    strobeE				;  bit 2: 0 = display off, 1 = display on
 								;  bit 1: 0 = cursor off, 1 = cursor on
 								;  bit 0: 0 = blink off, 1 = blink on
@@ -1728,11 +1841,13 @@ initLCD:
 ;
 ; Data bank 0 should be selected on entry.
 ;
-                                 
+
 writeLCDData:
 
-	bcf		LCD_CTRL,LCD_E			; init E to low
-	bsf		LCD_CTRL,LCD_RS			; select data register in LCD
+    banksel LCD_E_L
+	bcf		LCD_E_L,LCD_E			; init E to low
+    banksel LCD_RW_RS_L
+	bsf		LCD_RW_RS_L,LCD_RS		; select data register in LCD
 
 ;debug mks
 ;    call    smallDelay
@@ -1747,7 +1862,8 @@ writeLCDData:
 
 
 	movf	lcdData,W				; place data on output port
-	movwf	LCD_DATA                          
+    banksel LCD_DATA_OUT_L
+	movwf	LCD_DATA_OUT_L
     call    strobeE					; write the data
 
 ;debug mks
@@ -1775,11 +1891,13 @@ writeLCDData:
 ;
 ; Data bank 0 should be selected on entry.
 ;
-                                 
+
 writeLCDInstruction:
 
-	bcf 	LCD_CTRL,LCD_E			; init E to low  
-	bcf 	LCD_CTRL,LCD_RS			; select instruction register in LCD
+    banksel LCD_E_L
+	bcf 	LCD_E_L,LCD_E			; init E to low
+    banksel LCD_RW_RS_L
+	bcf 	LCD_RW_RS_L,LCD_RS		; select instruction register in LCD
 
 ;debug mks
 ;    call    smallDelay
@@ -1792,11 +1910,12 @@ writeLCDInstruction:
 	nop
 	nop
 
-
 	movf 	lcdData,W				; place instruction on output port
-	movwf	LCD_DATA                         
+    banksel LCD_DATA_OUT_L
+	movwf	LCD_DATA_OUT_L
     call    strobeE					; write the instruction
-	bsf		LCD_CTRL,LCD_RS			; set the instruction/data register select back to data register
+    banksel	LCD_RW_RS_L
+	bsf		LCD_RW_RS_L,LCD_RS		; set the instruction/data register select back to data register
 
 ;debug mks
 ;    call    smallDelay
@@ -1820,13 +1939,16 @@ writeLCDInstruction:
 ;
 ; Creates a small delay.
 ;
-                                 
+
 smallDelay:
-	movlw	0x2a                             
+
+    banksel smallDelayCnt
+
+	movlw	0x2a
 	movwf	smallDelayCnt
-                             
+
 L8b:
-	decfsz	smallDelayCnt,F                         
+	decfsz	smallDelayCnt,F
     goto    L8b
 	return
 
@@ -1838,15 +1960,17 @@ L8b:
 ;
 ; Creates a big delay.
 ;
-                                 
+
 bigDelay:
 
-	movlw	0x28                             
-	movwf	bigDelayCnt                             
+    banksel bigDelayCnt
+
+	movlw	0x28
+	movwf	bigDelayCnt
     call	smallDelay
 
 L9b:
-	decfsz	bigDelayCnt,F                         
+	decfsz	bigDelayCnt,F
     goto    L9b
 	return
 
@@ -1861,15 +1985,16 @@ L9b:
 
 strobeE:
 
-	bsf		LCD_CTRL,LCD_E
-	nop                                    
+    banksel LCD_E_L
+	bsf		LCD_E_L,LCD_E
 	nop
 	nop
 	nop
 	nop
-	bcf		LCD_CTRL,LCD_E
+	nop
+	bcf		LCD_E_L,LCD_E
 
-;debug mks    
+;debug mks
 ;    call    smallDelay
 	nop
 	nop
@@ -1910,7 +2035,7 @@ handleInterrupt:
 
 	btfsc 	INTCON,T0IF     		; Timer0 overflow interrupt?
 	goto 	handleTimer0Interrupt	; YES, so process Timer0
-           
+
 ; Not used at this time to make interrupt handler as small as possible.
 ;	btfsc 	INTCON, RBIF      		; NO, Change on PORTB interrupt?
 ;	goto 	portB_interrupt       	; YES, Do PortB Change thing
@@ -1948,7 +2073,7 @@ handleTimer0Interrupt:
 ; if start bit was caught at the very leading edge, need to delay a bit
 ; to catch first data bit a little after its leading edge; if the
 ; start bit was caught a bit late, this shouldn't be enough to push
-; the timing too late 
+; the timing too late
 
 	nop
 	nop
@@ -1960,7 +2085,7 @@ handleTimer0Interrupt:
 	nop
 
 ; read the control byte
-                                 
+
 	movlw	0x8					; preset bit counter to 8 bits to make a byte
 	movwf	bitCount
 
@@ -1968,16 +2093,16 @@ readControlByteLoop:
 
 	movlw	BIT_TO_BIT_LOOP_DELAY	; delay between bits
 	movwf	intScratch0
-bitLoop1: 	
+bitLoop1:
 	decfsz	intScratch0,F
     goto    bitLoop1
-	
+
 	movf	PORTA,W				; get Port A to get bit 0 (the serial data input)
 	movwf	intScratch0			; save it so rrf can be performed
-	rrf		intScratch0,F		; rotate bit 0 into the Carry bit                            
+	rrf		intScratch0,F		; rotate bit 0 into the Carry bit
 	rlf		newSerialByte,F		; rotate the Carry bit into the new data byte being constructed
-      
- 	decfsz	bitCount,F			; loop for 8 bits                         
+
+ 	decfsz	bitCount,F			; loop for 8 bits
     goto    readControlByteLoop
 
 	movf	newSerialByte,W		; store in newControlByte where main thread will detect that it has
@@ -1990,19 +2115,20 @@ bitLoop1:
 
 	movlw	FINAL_BIT_LOOP_DELAY	; delay a bit extra to get past last bit so it isn't detected
 	movwf	intScratch0				; as the next start bit
-finalBitLoop1: 	
+finalBitLoop1:
 	decfsz	intScratch0,F
     goto    finalBitLoop1
 
 waitForStartBitLoop1:
- 	btfsc	PORTA,SERIAL_IN			; loop until next start bit detected
+    banksel SERIAL_IN_P
+ 	btfsc	SERIAL_IN_P,SERIAL_IN	; loop until next start bit detected
     goto    waitForStartBitLoop1
 
 ; wait 1/2 bit width after start bit to put timing into center of first data bit
 
 	movlw	BIT_TO_BIT_LOOP_DELAY_H	; 1/2 delay between bits
 	movwf	intScratch0
-bitLoop2: 	
+bitLoop2:
 	decfsz	intScratch0,F
     goto    bitLoop2
 
@@ -2015,16 +2141,16 @@ readDataByteLoop:
 
 	movlw	BIT_TO_BIT_LOOP_DELAY	; delay between bits
 	movwf	intScratch0
-bitLoop3: 	
+bitLoop3:
 	decfsz	intScratch0,F
     goto    bitLoop3
-	
+
 	movf	PORTA,W				; get Port A to get bit 0 (the serial data input)
 	movwf	intScratch0			; save it so rrf can be performed
-	rrf		intScratch0,F		; rotate bit 0 into the Carry bit                            
+	rrf		intScratch0,F		; rotate bit 0 into the Carry bit
 	rlf		newSerialByte,F		; rotate the Carry bit into the new data byte being constructed
-      
- 	decfsz	bitCount,F			; loop for 8 bits                         
+
+ 	decfsz	bitCount,F			; loop for 8 bits
     goto    readDataByteLoop
 
 	movf	newSerialByte,W		; store in newLCDData where main thread will use it after
@@ -2042,5 +2168,5 @@ bitLoop3:
 
 ; end of handleTimer0Interrupt
 ;--------------------------------------------------------------------------------------------------
- 
+
     END
