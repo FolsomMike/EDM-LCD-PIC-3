@@ -1725,7 +1725,7 @@ displayGreeting:
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'0'
+	movlw	'1'
 	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
@@ -1777,33 +1777,30 @@ initLCD:
 	movwf	LCD_DATA_OUT_L		; prepare to write
     call    strobeE				; write to LCD
 
-    movlw   .6                  ; delay at least 100uS
-    call    msDelay
+    call    waitWhileLCDBusy
 
-	movlw	0x38				; write 0011 1000 Function Set Command ~ multi line display with 5x7 dot font
+	movlw	0x38				; write 0011 1000 Function Set Command
+                                ;       multi line display with 5x7 dot font
     banksel	LCD_DATA_OUT_L
 	movwf	LCD_DATA_OUT_L		;  0011 in upper nibble specifies Function Set Command
     call    strobeE				;  bit 3: 0 = 1 line display, 1 = multi-line display
 								;  bit 2: 0 = 5x7 dot font, 1 = 5 x 10 dot font
 
-    movlw   .6                  ; delay at least 100uS
-    call    msDelay
+    call    waitWhileLCDBusy
 
 	movlw	0x0c				; manual says to use 0x08 here (display off) but nothing works
     banksel	LCD_DATA_OUT_L      ;       if that is done -- not sure why? 0x0c = display on
 	movwf	LCD_DATA_OUT_L		;  bit 3: specifies display on/off command
     call    strobeE				;  bit 2: 0 = display off, 1 = display on
 
-    movlw   .1
-    call    msDelay
+    call    waitWhileLCDBusy
 
 	movlw	0x01				; write 0000 0001 ~ Clear Display
     banksel	LCD_DATA_OUT_L
 	movwf	LCD_DATA_OUT_L
     call    strobeE
 
-    movlw   .1
-    call    msDelay
+    call    waitWhileLCDBusy
 
 	movlw	0x06				; write 0000 0110 ~ Entry Mode Set, increment mode, no display shift
     banksel	LCD_DATA_OUT_L
@@ -1811,8 +1808,7 @@ initLCD:
     call    strobeE				; bit 1: 0 = no increment, 1 = increment mode; 
                                 ; bit 0: 0 = no shift, 1 = shift display
 
-    movlw   .1
-    call    msDelay
+    call    waitWhileLCDBusy
 
 	movlw	0x0c				; write 0000 1100 ~ Display On, cursor off, blink off
     banksel	LCD_DATA_OUT_L
@@ -1822,10 +1818,6 @@ initLCD:
 								;  bit 0: 0 = blink off, 1 = blink on
 
 ; Note: BF should be checked before each of the instructions starting with Display OFF.
-; In lieu of that, this code delays instead -- needs to be updated to check BF instead?
-
-    movlw   .1
-    call    msDelay
 
 	return
 
