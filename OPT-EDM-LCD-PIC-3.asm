@@ -21,7 +21,7 @@
 ;--------------------------------------------------------------------------------------------------
 ;
 ;--------------------------------------------------------------------------------------------------
-; LCD Notes for the OPT EDM Control Board I
+; LCD Notes for the  EDM Notch Cutter User Interface Board
 ;
 ; Optrex C-51847NFJ-SLW-ADN 20 characters by 4 lines
 ;
@@ -116,8 +116,8 @@
 ;
 ; These notes were verified using an oscilloscope.
 ;
-; The "LCD" PIC is configured to use the internal oscillator of 4Mhz (FOSC). The instruction cycle
-; frequency is Fosc/4. All instructions except branches take 1 cycle.
+; The "LCD" PIC is configured to use the internal oscillator of 16Mhz (FOSC). The instruction cycle
+; frequency is Fosc/4. All instructions except branches and gotos take 1 cycle.
 ;
 ; Timer0 increment frequency is Fosc/4 without prescaler -- in the "LCD" program the prescaler
 ; is assigned to the WatchDog, thus Timer0 freq = Fosc/4 (same as the cycle frequency)
@@ -234,6 +234,20 @@
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
+; Defines
+;
+
+; COMMENT OUT "#define debug 1" line before using code in system.
+; Defining debug will insert code which simplifies simulation by skipping code which waits on
+; stimulus and performing various other actions which make the simulation run properly.
+; Search for "ifdef debug" to find all examples of such code.
+
+;#define debug 1     ; set debug testing "on"        debug mks -- comment this line out
+
+; end of Defines
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
 ; Hardware Definitions
 ;
 ; The ports are defined with suffix _P while the latches are defined with _L.
@@ -261,6 +275,10 @@ SERIAL_OUT      EQU     RB7         ; serial data out to Main PIC
 ; Constant Definitions
 ;
 
+; Timer0 reload values shown here assume that the Timer0 prescaler is configured with a 4:1 ratio
+; for 16Mhz Fosc.
+
+; .255-.38 for 4Mhz
 TIMER0_RELOAD_START_BIT_SEARCH	EQU	.255-.38		; interrupt every 32 us (32 cycles)
 													; (half of the 64 uS (64 cycles) between serial bits)
 													; see note "Serial Data from Main PIC" in this file
@@ -269,9 +287,8 @@ TIMER0_RELOAD_START_BIT_SEARCH	EQU	.255-.38		; interrupt every 32 us (32 cycles)
 													; 38 is actual value used to take into account cycles
 													; lost in interrupt and due to counter skips after load
 
-
-TIMER0_RELOAD_START_BIT_SEARCH_Q	EQU	.255-.16
-													; interrupt every 32 us (32 cycles)
+; .255-.16 for 4Mhz
+TIMER0_RELOAD_START_BIT_SEARCH_Q	EQU	.255-.29    ; interrupt every 32 us (32 cycles)
 													; (half of the 64 uS (64 cycles) between serial bits)
 													; see note "Serial Data from Main PIC" in this file
 													; 16 is actual value used to take into account cycles
@@ -391,6 +408,7 @@ BLINK_ON_FLAG			EQU		0x01
 
 	smallDelayCnt			; used to count down for small delay
 	bigDelayCnt				; used to count down for big delay
+    msDelayCnt              ; used to count milliseconds
 
 	scratch0				; scratch pad variable
 	scratch1				; scratch pad variable
@@ -406,43 +424,6 @@ BLINK_ON_FLAG			EQU		0x01
 	newLCDData				; new data bytes stored here by interrupt routine
 
 	; end of variables ONLY written to by interrupt code
-
-
-    eepromAddress		    ; use to specify address to read or write from EEprom
-    eepromCount	        	; use to specify number of bytes to read or write from EEprom
-
-	debugCounter			; counts number of bytes saved to debug buffer
-	debugPointer			; points to next address in debug buffer
-
-	db0
-	db1
-	db2
-	db3
-	db4
-	db5
-	db6
-	db7
-	db8
-	db9
-	db10
-	db11
-	db12
-	db13
-	db14
-	db15
-	db16
-	db17
-	db18
-	db20
-	db21
-	db22
-	db23
-	db24
-	db25
-	db26
-	db27
-	db28
-	db29
 
  endc
 
@@ -477,13 +458,6 @@ BLINK_ON_FLAG			EQU		0x01
 
 ; Assign LCD character buffer in RAM - Bank 2 - RP0:RP1 to 1:0 to access
 ; Bank 2 has 80 bytes of free space
-
-; To access this bank (Bank 2) indirectly, STATUS:IRP must be set to 1
-
-; This buffer is often accessed indirectly (using the FSR/INDF registers)
-; The INDF register provides the lower 8 bits of the indirect address while the
-; IRP bit in the STATUS register provides the 9th bit to allow access of any
-; RAM location in any bank.
 
 ; LCD character buffer -- 4 lines x 20 characters each
 ; see "LCD ADDRESSING NOTE" in header notes at top of page for addressing explanation
@@ -653,11 +627,24 @@ BLINK_ON_FLAG			EQU		0x01
 	clrf	STATUS          ; set to known state
     clrf    PCLATH          ; set to bank 0 where the ISR is located
 
+;NOTE: Don't add any code before the timer reload or it will affect the timer period.
+
+    banksel TMR0
 	movlw	TIMER0_RELOAD_START_BIT_SEARCH_Q
 	movwf	TMR0
 	bcf 	INTCON,T0IF     ; clear the Timer0 overflow interrupt flag
 
-	; data bank 0 already selected by clearing STATUS above
+;debug mks
+    banksel SERIAL_OUT_L
+    bcf     SERIAL_OUT_L,SERIAL_OUT
+    bsf     SERIAL_OUT_L,SERIAL_OUT
+    bcf     SERIAL_OUT_L,SERIAL_OUT
+;debug mks end
+
+    ; For max efficiency, the interrupt routine only executes when it detects a low bit on the
+    ; serial input, which should be the start of a start bit. Then it processes the entire byte
+    ; before returning. Thus, each time it sees a low on interrupt here, it should be a start bit
+    ; since it completely read in the previous byte.
 
     banksel SERIAL_IN_P
 	btfss	SERIAL_IN_P,SERIAL_IN
@@ -697,15 +684,17 @@ setup:
 
     call    setupPortC
 
-	movlw	0x58			; set options 0101 1000 b
+    banksel OPTION_REG
+
+	movlw	0x51			; set options 0101 0001 b
 	movwf	OPTION_REG		; bit 7 = 0: PORTB pull-ups are enabled by individual port latch values
      						; bit 6 = 1: RBO/INT interrupt on rising edge
 							; bit 5 = 0: TOCS ~ Timer 0 run by internal instruction cycle clock (CLKOUT ~ Fosc/4)
 							; bit 4 = 1: TOSE ~ Timer 0 increment on high-to-low transition on RA4/T0CKI/CMP2 pin (not used here)
-							; bit 3 = 1: PSA ~ Prescaler assigned to WatchDog; Timer 0 will be 1:1 with Fosc/4
+							; bit 3 = 0: PSA ~ Prescaler enabled for Timer 0
                             ; bit 2 = 0 : Bits 2:0 control prescaler:
-                            ; bit 1 = 0 :    000 = 1:2 scaling for Timer0 (if assigned to Timer0)
-                            ; bit 0 = 0 :
+                            ; bit 1 = 0 :    001 = 1:4 scaling for Timer0
+                            ; bit 0 = 1 :
 
     banksel TMR0
 
@@ -713,6 +702,8 @@ setup:
 	movwf	TMR0
 
 ; enable the interrupts
+
+    banksel INTCON
 
 	bsf	    INTCON,PEIE	    ; enable peripheral interrupts (Timer0 is a peripheral)
     bsf     INTCON,T0IE     ; enabe TMR0 interrupts
@@ -752,19 +743,24 @@ setup:
 ;
 ; NOTE: Adjust I2C baud rate generator value when Fosc is changed.
 ;
-; wip mks -- need to change to 16Mhz and change all timing code as necessary
-;
 
 setupClock:
 
-    ; choose internal clock frequency of 4 Mhz ~ IRCF<3:0> = 1101
+    ; choose internal clock frequency of 16 Mhz ~ IRCF<3:0> = 1111
 
     banksel OSCCON
 
-    bsf     OSCCON, IRCF0
-    bcf     OSCCON, IRCF1
-    bsf     OSCCON, IRCF2
     bsf     OSCCON, IRCF3
+    bsf     OSCCON, IRCF2
+    bsf     OSCCON, IRCF1
+    bsf     OSCCON, IRCF0
+
+; debug mks 4Mhz ->  IRCF<3:0> = 1101
+    ;bsf     OSCCON, IRCF3
+    ;bsf     OSCCON, IRCF2
+    ;bcf     OSCCON, IRCF1
+    ;bsf     OSCCON, IRCF0
+;debug mks end
 
     return
 
@@ -809,7 +805,7 @@ setupPortA:
     bsf     TRISA, SERIAL_IN            ; input
     bcf     TRISA, LCD_RW               ; output
     bcf     TRISA, LCD_RS               ; output
-    bcf     TRISA, RA1                  ; input - unused - pulled up via external resistor
+    bsf     TRISA, RA1                  ; input - unused - pulled up via external resistor
 
     return
 
@@ -850,6 +846,11 @@ setupPortB:
     banksel TRISB
     movlw   b'11111111'                 ; first set all to inputs
     movwf   TRISB
+
+    ; set direction for each pin used
+
+    bcf     TRISB, SERIAL_OUT           ; output
+    bcf     TRISB, LCD_E                ; output
 
     return
 
@@ -902,17 +903,22 @@ start:
 
 	call	setup			; set up main variables and hardware
 
-   	call    bigDelay		; should wait more than 15ms after Vcc = 4.5V
+;debug mks
+;debugmks2:
+;    movlw   .10
+;    call    msDelay
+;    banksel SERIAL_OUT_L
+;    bcf     SERIAL_OUT_L,SERIAL_OUT
+;    bsf     SERIAL_OUT_L,SERIAL_OUT
+;    bcf     SERIAL_OUT_L,SERIAL_OUT
+;    goto debugmks2
+;debug mks end
 
 	call    initLCD
-
-    banksel flags
 
 	call	setUpLCDCharacterBuffer
 
 	call	clearLCDLocalBuffer
-
-    banksel flags
 
 	call	displayGreeting
 
@@ -920,13 +926,6 @@ start:
 
 	movlw	0xff			; 0xff in newControlByte means no new serial data
 	movwf	newControlByte	; it is changed when a new value is received
-
-	movlw	.30				; save 255 values
-	movwf	debugCounter
-
-	movlw	db0
-	movwf	debugPointer
-
 
 ; begin monitoring the serial data input line from the main PIC for data and instructions
 ; to be passed on to the LCD display
@@ -938,12 +937,11 @@ mainLoop:
 
     banksel flags
 
-	movf	newControlByte,W	; if newControlByte is 0xff, then no new data to process
- 	sublw	0xff
- 	btfss	STATUS,Z
-	call	handleDataFromMainPIC
-
-    banksel flags
+;debug mks -- put this back in
+;	movf	newControlByte,W	; if newControlByte is 0xff, then no new data to process
+; 	sublw	0xff
+; 	btfss	STATUS,Z
+;	call	handleDataFromMainPIC
 
 	call	writeNextCharInBufferToLCD ;write one character in the buffer to the LCD
 
@@ -965,10 +963,10 @@ mainLoop:
 ; display immediately. Address changes and data values are used to address and store in the local
 ; LCD character buffer.
 ;
-; Data bank 0 should be selected on entry.
-;
 
 handleDataFromMainPIC:
+
+    banksel flags
 
 	;copy the values to working variables so interrupt routine can use new variables
 
@@ -979,10 +977,6 @@ handleDataFromMainPIC:
 
 	movlw	0xff					; signal that the new data has been collected
 	movwf	newControlByte
-
-	; call to debug will cause communication to be corrupted with Main PIC when it comes time to
-	; write to the eeprom as that disables interrupts for a while
-	;call	debug	;debug mks -- store the controlByte and lcdData in eeprom
 
 	movf	controlByte,W			; if the control byte is 0, then the second byte is data for the LCD
  	sublw	0
@@ -1010,10 +1004,10 @@ handleDataFromMainPIC:
 ;
 ; All other control codes are transmitted directly to the LCD display.
 ;
-; Data bank 0 should be selected on entry.
-;
 
 handleLCDInstruction:
+
+    banksel flags
 
 	; catch clear screen command
 
@@ -1062,9 +1056,6 @@ notDisplayCursorBlinkCmd:
 ; Writes the next character in the current line to the LCD display. If the end of the line is
 ; reached, the line pointer is incremented to the next line.
 ;
-; Bank selection not important on entry.
-; STATUS:IRP is modified
-;
 
 writeNextCharInBufferToLCD:
 
@@ -1102,7 +1093,6 @@ noHideCharacter:
 
     call    writeLCDData
 
-    banksel lcdBufOutPtrH
 	call	incrementLCDOutBufferPointers
 
 	return
@@ -1119,10 +1109,10 @@ noHideCharacter:
 ; When the last column is reached, the line number is incremented while the column rolls back to 0;
 ; when the last line is reached the line number rolls back to 0.
 ;
-; Data bank 1 should be selected on entry.
-;
 
 incrementLCDOutBufferPointers:
+
+    banksel lcdBufOutPtrH
 
 	incf	lcdBufOutPtrL,F	; point to next character in buffer
     btfsc   STATUS,Z
@@ -1165,8 +1155,6 @@ noRollOver:
 ; Note: The cursor and blink functions of the display are not used -- the PIC code handles those
 ; functions. See notes "Cursor and Blinking" in this file.
 ;
-; Bank selection not important on entry.
-;
 
 handleEndOfRefreshTasks:
 
@@ -1184,6 +1172,8 @@ handleEndOfRefreshTasks:
 	; to the last state specified by the "Main" PIC
 
 	; check if "Main" PIC has turned blinking on
+
+    banksel flags
 
 	btfss	currentLCDOnOffState,BLINK_ON_OFF_CMD_FLAG
 	goto	blinkIsOffHERT
@@ -1215,10 +1205,10 @@ blinkIsOffHERT:
 ; Sets the lcdBufOutPtr and the write address currently stored in the LCD display appropriate to
 ; the current buffer line number being written.
 ;
-; Data bank 1 should be selected on entry.
-;
 
 setLCDVariablesPerLineNumber:
+
+    banksel lcdOutLine
 
 	movf	lcdOutLine,W	; handle line 0
  	sublw	0
@@ -1292,9 +1282,6 @@ writeLCDInstructionAndExit:
 ; Sets all data in the local LCD character buffer to spaces. The LCD display will be cleared
 ; when the local buffer is next transmitted to the display.
 ;
-; Bank selection not important on entry.
-; STATUS:IRP is modified     bsf     STATUS,IRP      ; use upper half of memory for indirect addressing of LCD buffer
-;
 
 clearLCDLocalBuffer:
 
@@ -1329,8 +1316,6 @@ clearLCDLoop:
 ;
 ; Prepares the LCD character buffer for use.
 ;
-; Bank selection not important on entry.
-;
 
 setUpLCDCharacterBuffer:
 
@@ -1359,10 +1344,10 @@ setUpLCDCharacterBuffer:
 ;
 ; see "LCD ADDRESSING NOTE" in header notes at top of page for addressing explanation
 ;
-; Bank 0 should be selected on entry.
-;
 
 setLCDBufferWriteAddress:
+
+    banksel flags
 
 	movf	lcdData,W		; load address control code from bank 0
 
@@ -1374,6 +1359,8 @@ setLCDBufferWriteAddress:
 	movwf	lcdScratch0		; store address control code in bank 1 for easy access
 
 	call	getLCDLineContainingAddress	; find which line contains the specified address
+
+    banksel lcdBufInPtrH
 
 	movf	lcdBufInPtrH,W          ; store as the cursor location for later use in making
     banksel currentCursorBufPosH    ; the character at that location blink
@@ -1406,10 +1393,10 @@ setLCDBufferWriteAddress:
 ; set to "on" then it is turned back on to briefly highlight the selected location before
 ; the next refresh.
 ;
-; Bank 0 should be selected on entry.
-;
 
 setLCDOnOffAndCursorAndBlink:
+    
+    banksel lcdData
 
 	movf	lcdData,W		; load address control code from bank 0
 
@@ -1431,11 +1418,10 @@ setLCDOnOffAndCursorAndBlink:
 ; number of characters has been stored for a line, all further attempts to write will be ignored
 ; until the address is reset.
 ;
-; Bank 0 should be selected on entry.
-; STATUS:IRP is modified
-;
 
 writeToLCDBuffer:
+
+    banksel lcdData
 
 	movf	lcdData,W		; get the byte to be stored
 
@@ -1484,12 +1470,12 @@ writeToLCDBuffer:
 ;
 ; see "LCD ADDRESSING NOTE" in header notes at top of page for addressing explanation
 ;
-; Bank 1 should be selected on entry.
-;
 ; REMEMBER: Borrow flag is inverse: 0 = borrow, 1 = no borrow
 ;
 
 getLCDLineContainingAddress:
+
+    banksel lcdScratch0
 
 	; check for address any where on line 0 (between *_START and *_END
 
@@ -1582,12 +1568,12 @@ notLine2_GL:
 ;
 ; The text is written to the local LCD character buffer so it will be transmitted to the display.
 ;
-; Bank 0 should be selected on entry.
-;
 ; wip mks -- convert this to the write string method used in "OPT EDM Main PIC.asm"
 ;
 
 displayGreeting:
+
+    banksel flags
 
 	movlw	0x80			; move cursor to line 1 column 1 (address 0x00 / code 0x80)
 	movwf	lcdData         ;   (bit 7 = 1 specifies address set command, bits 6:0 are the address)
@@ -1763,58 +1749,69 @@ initLCD:
 	bcf		LCD_E_L,LCD_E		; LCD E strobe low
     banksel LCD_RW_RS_L
 	bcf		LCD_RW_RS_L,LCD_RS  ; LCD RS low (instruction register selected)
-    call    smallDelay			; wait a bit
 
-	movlw	0x30				; 1st send of Function Set Command: (8-Bit interface)(BF cannot be checked before this command.)
+    movlw   .200                ; delay at least 15 ms after Vcc = 4.5V
+    call    msDelay             ;  delay plenty to allow power to stabilize
+
+	movlw	0x30				; 1st send of Function Set Command: (8-Bit interface)
+                                ; (BF cannot be checked before this command.)
     banksel	LCD_DATA_OUT_L
 	movwf	LCD_DATA_OUT_L		; prepare to write
     call    strobeE				; write to LCD
-    call    bigDelay			; should wait more than 4.1ms
 
-	movlw	0x30				; 2nd send of Function Set Command: (8-Bit interface)(BF cannot be checked before this command.)
+    movlw   .6                  ; delay at least 100uS
+    call    msDelay
+
+	movlw	0x30				; 2nd send of Function Set Command: (8-Bit interface)
+                                ; (BF cannot be checked before this command.)
 	banksel	LCD_DATA_OUT_L
     movwf	LCD_DATA_OUT_L		; prepare to write
     call    strobeE				; write to LCD
-    call    smallDelay			; should wait more than 100us
 
-	movlw	0x30				; 3rd send of Function Set Command: (8-Bit interface)(BF can be checked after this command)
-    banksel	LCD_DATA_OUT_L
-	movwf	LCD_DATA_OUT_L		; prepare to write	(BF busy flag cannot be checked on this board because R/W line is tied low)
+    movlw   .6                  ; delay at least 100uS
+    call    msDelay
+
+	movlw	0x30				; 3rd send of Function Set Command: (8-Bit interface)
+    banksel	LCD_DATA_OUT_L      ; (BF can be checked after this command)
+	movwf	LCD_DATA_OUT_L		; prepare to write
     call    strobeE				; write to LCD
-    call    smallDelay			; wait for a bit because BF (busy flag) cannot be checked on this board
+
+    movlw   .6                  ; delay at least 100uS
+    call    msDelay
 
 	movlw	0x38				; write 0011 1000 Function Set Command ~ multi line display with 5x7 dot font
     banksel	LCD_DATA_OUT_L
 	movwf	LCD_DATA_OUT_L		;  0011 in upper nibble specifies Function Set Command
     call    strobeE				;  bit 3: 0 = 1 line display, 1 = multi-line display
 								;  bit 2: 0 = 5x7 dot font, 1 = 5 x 10 dot font
-	call    smallDelay			; wait for a bit because BF (busy flag) cannot be checked on this board
 
-	movlw	0x0c				; write 0000 1000 ~ Display Off
-    banksel	LCD_DATA_OUT_L
+    movlw   .6                  ; delay at least 100uS
+    call    msDelay
+
+	movlw	0x0c				; manual says to use 0x08 here (display off) but nothing works
+    banksel	LCD_DATA_OUT_L      ;       if that is done -- not sure why? 0x0c = display on
 	movwf	LCD_DATA_OUT_L		;  bit 3: specifies display on/off command
     call    strobeE				;  bit 2: 0 = display off, 1 = display on
-	call    smallDelay			; wait for a bit because BF (busy flag) cannot be checked on this board
-								; NOTE: LCD user manual instructs to turn off display here with 0x08
-								;  but this did NOT work. Unknown why.
+
+    movlw   .1
+    call    msDelay
 
 	movlw	0x01				; write 0000 0001 ~ Clear Display
     banksel	LCD_DATA_OUT_L
 	movwf	LCD_DATA_OUT_L
     call    strobeE
-	call    smallDelay			; wait for a bit because BF (busy flag) cannot be checked on this board
-								; NOTE: clear display added by MKS to match suggested setup in LCD user manual
+
+    movlw   .1
+    call    msDelay
 
 	movlw	0x06				; write 0000 0110 ~ Entry Mode Set, increment mode, no display shift
     banksel	LCD_DATA_OUT_L
 	movwf	LCD_DATA_OUT_L		; bits 3:2 = 0:1 : specifies Entry Mode Set
-    call    strobeE				; bit 1: 0 = no increment, 1 = increment mode; bit 0: 0 = no shift, 1 = shift display
-	call    smallDelay			; wait for a bit because BF (busy flag) cannot be checked on this board
-								; NOTE: Entry Mode Set was being done after display on -- moved by MKS to match
-								;		suggested setup in LCD user manual.
-								; NOTE2: See above regarding not working when display turned off before this --
-								; does display need to be on when this command given regardless of LCD manual
-								; suggestions?
+    call    strobeE				; bit 1: 0 = no increment, 1 = increment mode; 
+                                ; bit 0: 0 = no shift, 1 = shift display
+
+    movlw   .1
+    call    msDelay
 
 	movlw	0x0c				; write 0000 1100 ~ Display On, cursor off, blink off
     banksel	LCD_DATA_OUT_L
@@ -1824,10 +1821,10 @@ initLCD:
 								;  bit 0: 0 = blink off, 1 = blink on
 
 ; Note: BF should be checked before each of the instructions starting with Display OFF.
-;   Since this board design does not allow BF (LCD busy flag) to be checked, a delay is inserted after each
-;	instruction to allow time for completion.
+; In lieu of that, this code delays instead -- needs to be updated to check BF instead?
 
-    call    bigDelay
+    movlw   .1
+    call    msDelay
 
 	return
 
@@ -1839,44 +1836,23 @@ initLCD:
 ;
 ; Writes a data byte from variable lcdData to the LCD.  The data is a character to be displayed.
 ;
-; Data bank 0 should be selected on entry.
-;
 
 writeLCDData:
 
     banksel LCD_E_L
 	bcf		LCD_E_L,LCD_E			; init E to low
-    banksel LCD_RW_RS_L
+    ;proper bank already selected
 	bsf		LCD_RW_RS_L,LCD_RS		; select data register in LCD
 
-;debug mks
-;    call    smallDelay
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
+    call    smallDelay
 
-
+    banksel lcdData
 	movf	lcdData,W				; place data on output port
     banksel LCD_DATA_OUT_L
 	movwf	LCD_DATA_OUT_L
     call    strobeE					; write the data
 
-;debug mks
-;    call    smallDelay
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-
+    call    smallDelay
 
 	return
 
@@ -1896,20 +1872,12 @@ writeLCDInstruction:
 
     banksel LCD_E_L
 	bcf 	LCD_E_L,LCD_E			; init E to low
-    banksel LCD_RW_RS_L
+    ;proper bank already selected
 	bcf 	LCD_RW_RS_L,LCD_RS		; select instruction register in LCD
 
-;debug mks
-;    call    smallDelay
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
+    call    smallDelay
 
+    banksel lcdData
 	movf 	lcdData,W				; place instruction on output port
     banksel LCD_DATA_OUT_L
 	movwf	LCD_DATA_OUT_L
@@ -1917,17 +1885,7 @@ writeLCDInstruction:
     banksel	LCD_RW_RS_L
 	bsf		LCD_RW_RS_L,LCD_RS		; set the instruction/data register select back to data register
 
-;debug mks
-;    call    smallDelay
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-
+    call    smallDelay
 
 	return
 
@@ -1944,6 +1902,10 @@ smallDelay:
 
     banksel smallDelayCnt
 
+    ifdef debug       ; if debugging, don't delay
+    return
+    endif
+
 	movlw	0x2a
 	movwf	smallDelayCnt
 
@@ -1956,25 +1918,56 @@ L8b:
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
-; bigDelay
+; msDelay
 ;
-; Creates a big delay.
+; Creates a delay of x milliseconds where x is specified in the W register.
+;
+; On Entry:
+;
+; W contains number of milliseconds to delay.
+;
+; Values to achieve 1 millisecond for various Fosc:
+; 
+; for 4Mhz  Fosc -> bigDelayCnt = .2, smallDelayCnt = .166
+; for 16Mhz Fosc -> bigDelayCnt = .6, smallDelayCnt = .222
+;
+; Note: these values do not take into account interrupts processing which will increase the delay.
 ;
 
-bigDelay:
+msDelay:
 
-    banksel bigDelayCnt
+    banksel msDelayCnt
 
-	movlw	0x28
+    ifdef debug                 ; if debugging, don't delay
+    return
+    endif
+
+    movwf   msDelayCnt          ; number of milliseconds
+
+msD1Loop1:
+
+	movlw	.6                  ; smallDelayCnt * bigDelayCnt give delay of 1 millisecond
 	movwf	bigDelayCnt
-    call	smallDelay
 
-L9b:
+msD1Loop2:
+
+	movlw	.222                
+	movwf	smallDelayCnt
+
+msD1Loop3:
+
+	decfsz	smallDelayCnt,F
+    goto    msD1Loop3
+
 	decfsz	bigDelayCnt,F
-    goto    L9b
+    goto    msD1Loop2
+
+	decfsz	msDelayCnt,F
+    goto    msD1Loop1
+
 	return
 
-; end of bigDelay
+; end of msDelay
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
@@ -1987,28 +1980,37 @@ strobeE:
 
     banksel LCD_E_L
 	bsf		LCD_E_L,LCD_E
-	nop
-	nop
-	nop
-	nop
-	nop
-	bcf		LCD_E_L,LCD_E
 
-;debug mks
-;    call    smallDelay
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
+    call    smallDelay
 
+    bcf		LCD_E_L,LCD_E
+
+    call    smallDelay
 
 	return
 
 ; end of strobeE
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; waitWhileLCDBusy
+;
+;
+
+waitWhileLCDBusy:
+
+    banksel LCD_E_L
+	bsf		LCD_E_L,LCD_E
+
+    call    smallDelay
+
+    bcf		LCD_E_L,LCD_E
+
+    call    smallDelay
+
+	return
+
+; end of waitWhileLCDBusy
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
@@ -2056,8 +2058,6 @@ endISR:
 ;
 ; This function is called when the Timer0 register overflows.
 ;
-; Data bank 0 should be selected on entry.
-;
 ; NOTE NOTE NOTE
 ; It is important to use no (or very few) subroutine calls.  The stack is only 8 deep and
 ; it is very bad for the interrupt routine to use it.
@@ -2070,10 +2070,14 @@ endISR:
 
 handleTimer0Interrupt:
 
+    banksel bitCount
+
 ; if start bit was caught at the very leading edge, need to delay a bit
 ; to catch first data bit a little after its leading edge; if the
 ; start bit was caught a bit late, this shouldn't be enough to push
 ; the timing too late
+
+;debug mks -- x 4 nops here!
 
 	nop
 	nop
@@ -2097,7 +2101,8 @@ bitLoop1:
 	decfsz	intScratch0,F
     goto    bitLoop1
 
-	movf	PORTA,W				; get Port A to get bit 0 (the serial data input)
+    ;proper bank already selected for SERIAL_IN_P (PortA)
+	movf	SERIAL_IN_P,W		; get serial in port data - bit 0 is the serial data input
 	movwf	intScratch0			; save it so rrf can be performed
 	rrf		intScratch0,F		; rotate bit 0 into the Carry bit
 	rlf		newSerialByte,F		; rotate the Carry bit into the new data byte being constructed
@@ -2120,7 +2125,7 @@ finalBitLoop1:
     goto    finalBitLoop1
 
 waitForStartBitLoop1:
-    banksel SERIAL_IN_P
+    ;proper bank already selected for SERIAL_IN_P (PortA)
  	btfsc	SERIAL_IN_P,SERIAL_IN	; loop until next start bit detected
     goto    waitForStartBitLoop1
 
