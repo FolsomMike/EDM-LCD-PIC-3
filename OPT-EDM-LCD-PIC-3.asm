@@ -242,7 +242,7 @@
 ; stimulus and performing various other actions which make the simulation run properly.
 ; Search for "ifdef debug" to find all examples of such code.
 
-;#define debug 1     ; set debug testing "on"        debug mks -- comment this line out
+;#define debug 1     ; set debug testing "on"
 
 ; end of Defines
 ;--------------------------------------------------------------------------------------------------
@@ -279,7 +279,7 @@ SERIAL_OUT      EQU     RB7         ; serial data out to Main PIC
 ; for 16Mhz Fosc.
 
 ; .255-.38 for 4Mhz
-TIMER0_RELOAD_START_BIT_SEARCH	EQU	.255-.38		; interrupt every 32 us (32 cycles)
+TIMER0_RELOAD_START_BIT_SEARCH	EQU	.255-.60		; interrupt every 32 us (32 cycles)
 													; (half of the 64 uS (64 cycles) between serial bits)
 													; see note "Serial Data from Main PIC" in this file
 													; wasted cycles in interrupt not accounted for -- use
@@ -294,21 +294,28 @@ TIMER0_RELOAD_START_BIT_SEARCH_Q	EQU	.255-.29    ; interrupt every 32 us (32 cyc
 													; 16 is actual value used to take into account cycles
 													; lost in interrupt and due to counter skips after load
 
-BIT_TO_BIT_LOOP_DELAY			EQU	.19				; used in decfsz loops to delay between serial bits
-													; want 64 uS
-													; 19 takes into account cycles used by bit read loop
+
+FOSC_IN_MHZ                     EQU .16             ; Set this to match the Fosc frequency
+
+INSTRUCTION_RATE                EQU FOSC_IN_MHZ/.4
+
+BIT_TO_BIT_LOOP_DELAY			EQU	.21*INSTRUCTION_RATE	; used in decfsz loops to delay between serial bits
+                                                            ; want 64 uS
+                                                            ; 19 takes into account cycles used by bit read loop
+                                                            ; 19 is value when Fosc = 4Mhz
 
 BIT_TO_BIT_LOOP_DELAY_H			EQU	BIT_TO_BIT_LOOP_DELAY/.2
 													; used in decfsz loops to delay after start bit
 													; half of normal bit width to put timing into center
 													; of first data bit
 
-FINAL_BIT_LOOP_DELAY			EQU	.22				; used in decfsz loops to delay after the final bit
-													; so it won't be seen as the next start bit -- it
-													; is slightly longer than a full bit delay
+FINAL_BIT_LOOP_DELAY			EQU	.22*INSTRUCTION_RATE	; used in decfsz loops to delay after the final bit
+                                                            ; so it won't be seen as the next start bit -- it
+                                                            ; is slightly longer than a full bit delay
+                                                            ; 22 is value when Fosc = 4MHz  
 
 
-CURSOR_BLINK_RATE		EQU .20			; controls how fast the character at the cursor location blinks
+CURSOR_BLINK_RATE		EQU .15*INSTRUCTION_RATE    ; controls how fast the character at the cursor location blinks
 
 DISPLAY_ON_OFF_CMD_MASK	EQU 0xf8		; masks lower bits off on/off command to leave only the command type
 DISPLAY_ON_OFF_CMD		EQU 0x08		; the upper bits which specify the command type
@@ -634,13 +641,6 @@ BLINK_ON_FLAG			EQU		0x01
 	movwf	TMR0
 	bcf 	INTCON,T0IF     ; clear the Timer0 overflow interrupt flag
 
-;debug mks
-    banksel SERIAL_OUT_L
-    bcf     SERIAL_OUT_L,SERIAL_OUT
-    bsf     SERIAL_OUT_L,SERIAL_OUT
-    bcf     SERIAL_OUT_L,SERIAL_OUT
-;debug mks end
-
     ; For max efficiency, the interrupt routine only executes when it detects a low bit on the
     ; serial input, which should be the start of a start bit. Then it processes the entire byte
     ; before returning. Thus, each time it sees a low on interrupt here, it should be a start bit
@@ -742,6 +742,10 @@ setup:
 ; Assumes all programmable clock related options are at Reset default values.
 ;
 ; NOTE: Adjust I2C baud rate generator value when Fosc is changed.
+;       Adjust FOSC_IN_MHZ also.
+;
+; 16 Mhz -> IRCF<3:0> = 1111
+;  4 Mhz ->  IRCF<3:0> = 1101
 ;
 
 setupClock:
@@ -754,13 +758,6 @@ setupClock:
     bsf     OSCCON, IRCF2
     bsf     OSCCON, IRCF1
     bsf     OSCCON, IRCF0
-
-; debug mks 4Mhz ->  IRCF<3:0> = 1101
-    ;bsf     OSCCON, IRCF3
-    ;bsf     OSCCON, IRCF2
-    ;bcf     OSCCON, IRCF1
-    ;bsf     OSCCON, IRCF0
-;debug mks end
 
     return
 
@@ -892,6 +889,13 @@ setupPortC:
 ; end of setupPortC
 ;--------------------------------------------------------------------------------------------------
 
+;debug mks
+;    banksel SERIAL_OUT_L
+;    bcf     SERIAL_OUT_L,SERIAL_OUT
+;    bsf     SERIAL_OUT_L,SERIAL_OUT
+;    bcf     SERIAL_OUT_L,SERIAL_OUT
+;debug mks end
+
 ;--------------------------------------------------------------------------------------------------
 ; Main Code
 ;
@@ -902,17 +906,6 @@ setupPortC:
 start:
 
 	call	setup			; set up main variables and hardware
-
-;debug mks
-;debugmks2:
-;    movlw   .10
-;    call    msDelay
-;    banksel SERIAL_OUT_L
-;    bcf     SERIAL_OUT_L,SERIAL_OUT
-;    bsf     SERIAL_OUT_L,SERIAL_OUT
-;    bcf     SERIAL_OUT_L,SERIAL_OUT
-;    goto debugmks2
-;debug mks end
 
 	call    initLCD
 
@@ -937,11 +930,10 @@ mainLoop:
 
     banksel flags
 
-;debug mks -- put this back in
-;	movf	newControlByte,W	; if newControlByte is 0xff, then no new data to process
-; 	sublw	0xff
-; 	btfss	STATUS,Z
-;	call	handleDataFromMainPIC
+	movf	newControlByte,W	; if newControlByte is 0xff, then no new data to process
+ 	sublw	0xff
+ 	btfss	STATUS,Z
+	call	handleDataFromMainPIC
 
 	call	writeNextCharInBufferToLCD ;write one character in the buffer to the LCD
 
@@ -1299,8 +1291,7 @@ clearLCDLocalBuffer:
 
 clearLCDLoop:
 
-	movwf	INDF0			; store to each buffer location
-	incf	FSR0,F
+	movwi	FSR0++			; store to each buffer location
 	decfsz	lcdScratch0,F
 	goto	clearLCDLoop
 
@@ -2114,7 +2105,35 @@ handleTimer0Interrupt:
 ; start bit was caught a bit late, this shouldn't be enough to push
 ; the timing too late
 
-;debug mks -- x 4 nops here!
+; Need to replace this with a delay loop using constants scaled by Fosc as is done with
+;   TIMER0_RELOAD_START_BIT_SEARCH_Q
+
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
 
 	nop
 	nop
@@ -2187,7 +2206,8 @@ bitLoop3:
 	decfsz	intScratch0,F
     goto    bitLoop3
 
-	movf	PORTA,W				; get Port A to get bit 0 (the serial data input)
+    ;proper bank already selected for SERIAL_IN_P (PortA)
+	movf	SERIAL_IN_P,W		; get serial in port data - bit 0 is the serial data input
 	movwf	intScratch0			; save it so rrf can be performed
 	rrf		intScratch0,F		; rotate bit 0 into the Carry bit
 	rlf		newSerialByte,F		; rotate the Carry bit into the new data byte being constructed
