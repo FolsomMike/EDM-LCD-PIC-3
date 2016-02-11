@@ -1715,7 +1715,7 @@ displayGreeting:
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'2'
+	movlw	'3'
 	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
@@ -1725,7 +1725,7 @@ displayGreeting:
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'1'
+	movlw	'0'
 	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
@@ -1749,6 +1749,7 @@ initLCD:
 	bcf		LCD_E_L,LCD_E		; LCD E strobe low
     banksel LCD_RW_RS_L
 	bcf		LCD_RW_RS_L,LCD_RS  ; LCD RS low (instruction register selected)
+    bcf		LCD_RW_RS_L,LCD_RW  ; set LCD R/W low to select write to LCD mode
 
     movlw   .200                ; delay at least 15 ms after Vcc = 4.5V
     call    msDelay             ;  delay plenty to allow power to stabilize
@@ -1836,25 +1837,23 @@ initLCD:
 ;
 ; Writes a data byte from variable lcdData to the LCD.  The data is a character to be displayed.
 ;
+; Waits until LCD ready before writing.
+;
 
 writeLCDData:
 
-    banksel LCD_E_L
-	bcf		LCD_E_L,LCD_E			; init E to low
-    ;proper bank already selected
-	bsf		LCD_RW_RS_L,LCD_RS		; select data register in LCD
+    call    waitWhileLCDBusy        ; wait until LCD ready
 
-    call    smallDelay
+    banksel LCD_RW_RS_L
+	bsf		LCD_RW_RS_L,LCD_RS		; set RS high to select data register in LCD
+    bcf		LCD_RW_RS_L,LCD_RW      ; set R/W low to write
 
-    banksel lcdData
-	movf	lcdData,W				; place data on output port
+    banksel lcdData                 ; place data on output port
+	movf	lcdData,W
     banksel LCD_DATA_OUT_L
 	movwf	LCD_DATA_OUT_L
-    call    strobeE					; write the data
 
-    call    smallDelay
-
-	return
+    goto    strobeE					; write the data
 
 ; end of writeLCDData
 ;--------------------------------------------------------------------------------------------------
@@ -1865,31 +1864,120 @@ writeLCDData:
 ; Writes an instruction byte from variable lcdData to the LCD.  An instruction is one of several
 ; codes recognized by the LCD display for clearing the screen, moving the cursor, etc.
 ;
-; Data bank 0 should be selected on entry.
+; Waits until LCD ready before writing.
 ;
 
 writeLCDInstruction:
 
-    banksel LCD_E_L
-	bcf 	LCD_E_L,LCD_E			; init E to low
-    ;proper bank already selected
-	bcf 	LCD_RW_RS_L,LCD_RS		; select instruction register in LCD
+    call    waitWhileLCDBusy        ; wait until LCD ready
 
-    call    smallDelay
+    banksel LCD_RW_RS_L
+	bcf		LCD_RW_RS_L,LCD_RS		; set RS low to select instruction register in LCD
+    bcf		LCD_RW_RS_L,LCD_RW      ; set R/W low to write
 
-    banksel lcdData
-	movf 	lcdData,W				; place instruction on output port
+    banksel lcdData                 ; place data on output port
+	movf	lcdData,W				
     banksel LCD_DATA_OUT_L
 	movwf	LCD_DATA_OUT_L
-    call    strobeE					; write the instruction
-    banksel	LCD_RW_RS_L
-	bsf		LCD_RW_RS_L,LCD_RS		; set the instruction/data register select back to data register
 
-    call    smallDelay
+    goto    strobeE					; write the data
+
+; end of writeLCDInstruction
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; waitWhileLCDBusy
+;
+; Loops until the LCD busy flag returns as not-busy.
+;
+; The busy flag is returned in bit 7 when the LCD instruction register is read.
+;
+
+waitWhileLCDBusy:
+
+    banksel TRISC
+    movlw   b'11111111'             ; set all to inputs so data can be read
+    movwf   TRISC                   ; do this before RW is taken high
+
+    banksel LCD_RW_RS_L
+	bcf		LCD_RW_RS_L,LCD_RS		; set RS low to select instruction register in LCD
+    bsf		LCD_RW_RS_L,LCD_RW      ; set R/W high to read
+
+wWLBLoop1:
+
+    call    strobeE					; read from LCD
+
+    btfsc   WREG,7                  ; exit if busy flag = 0
+    goto    wWLBLoop1               ; loop if busy flag = 1
+
+    banksel LCD_RW_RS_L
+    bcf		LCD_RW_RS_L,LCD_RW      ; set R/W low to write
+
+    banksel TRISC
+    movlw   b'00000000'             ; set all to outputs
+    movwf   TRISC                   ; do this after RW is taken low
+
+    return
+
+; end of waitWhileLCDBusy
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; strobeE
+;
+; Strobes LCD E line to write or read data to the LCD.
+;
+; Control lines RS and WR should have been set at least 2 instructions prior to calling this
+; function to ensure proper setup time. Generally, the call opcode will satisfy this requirement.
+; The third instruction required for delay is provided by the banksel in this function.
+;
+; The LCD data port must already be in the proper configuration: input for reading and output
+; for writing.
+;
+; Data from the port is returned in W. If reading data, this will be the byte read from the LCD.
+; If writing data, the byte returned is an unpredictable value and should not be used.
+;
+; Data is strobed into the LCD on the falling edge of E.
+; Data can be read from LCD just before rising edge of E.
+;
+; Program is set up to access LCD when PIC is running at fastest speed (48 MHz Fosc) so it will
+; work for all possible speeds.
+;
+; Instruction cycle time at 48 Mhz Fosc (fastest speed option): 0.0833 uS = 83 nS
+;
+; Number of nops at 48 Mhz Fosc required to meet timing shown in parentheses below. Each value is
+; rounded up to the next integer and then increased by one to ensure timing is met.
+;
+; Write to LCD:
+;
+; Minimum time RS,RW to E rising edge: 140 ns (3 instructions)
+; Minimum E high pulse width: 450 ns (7 instructions)
+; Minimum time Data stable to E falling edge: 195 ns (4 instructions)
+;
+; Read from LCD:
+; 
+; Max time Data stable after E rising edge: 320 ns (5 instructions)
+;
+
+strobeE:
+
+    banksel LCD_E_L
+	bsf		LCD_E_L,LCD_E
+
+    nop                         ;see timing in notes above
+    nop                         ;E high for minimum 7 instructions
+    nop
+    nop
+
+    banksel LCD_DATA_IN_P       ;read data from LCD port - valid only if reading
+    movf    LCD_DATA_IN_P,W
+
+    banksel LCD_E_L
+    bcf		LCD_E_L,LCD_E
 
 	return
 
-; end of writeLCDInstruction
+; end of strobeE
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
@@ -1968,49 +2056,6 @@ msD1Loop3:
 	return
 
 ; end of msDelay
-;--------------------------------------------------------------------------------------------------
-
-;--------------------------------------------------------------------------------------------------
-; strobeE
-;
-; Strobes LCD E line to read/write data to the LCD and then delays for a bit.
-;
-
-strobeE:
-
-    banksel LCD_E_L
-	bsf		LCD_E_L,LCD_E
-
-    call    smallDelay
-
-    bcf		LCD_E_L,LCD_E
-
-    call    smallDelay
-
-	return
-
-; end of strobeE
-;--------------------------------------------------------------------------------------------------
-
-;--------------------------------------------------------------------------------------------------
-; waitWhileLCDBusy
-;
-;
-
-waitWhileLCDBusy:
-
-    banksel LCD_E_L
-	bsf		LCD_E_L,LCD_E
-
-    call    smallDelay
-
-    bcf		LCD_E_L,LCD_E
-
-    call    smallDelay
-
-	return
-
-; end of waitWhileLCDBusy
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
