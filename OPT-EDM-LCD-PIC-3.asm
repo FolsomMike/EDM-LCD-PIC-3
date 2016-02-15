@@ -666,7 +666,6 @@ BLINK_ON_FLAG			EQU		0x01
 
 setup:
 
-    banksel INTCON
     clrf    INTCON          ; disable all interrupts
 
     call    setupClock      ; set system clock source and frequency
@@ -686,15 +685,16 @@ setup:
 
     banksel OPTION_REG
 
-	movlw	0x51			; set options 0101 0001 b
-	movwf	OPTION_REG		; bit 7 = 0: PORTB pull-ups are enabled by individual port latch values
-     						; bit 6 = 1: RBO/INT interrupt on rising edge
-							; bit 5 = 0: TOCS ~ Timer 0 run by internal instruction cycle clock (CLKOUT ~ Fosc/4)
-							; bit 4 = 1: TOSE ~ Timer 0 increment on high-to-low transition on RA4/T0CKI/CMP2 pin (not used here)
-							; bit 3 = 0: PSA ~ Prescaler enabled for Timer 0
+    movlw   0x58
+    movwf   OPTION_REG      ; Option Register = 0x58   0101 1000 b
+                            ; bit 7 = 0 : weak pull-ups are enabled by individual port latch values
+                            ; bit 6 = 1 : interrupt on rising edge
+                            ; bit 5 = 0 : TOCS ~ Timer 0 run by internal instruction cycle clock (CLKOUT ~ Fosc/4)
+                            ; bit 4 = 1 : TOSE ~ Timer 0 increment on high-to-low transition on RA4/T0CKI/CMP2 pin (not used here)
+							; bit 3 = 1 : PSA ~ Prescaler disabled; Timer0 will be 1:1 with Fosc/4
                             ; bit 2 = 0 : Bits 2:0 control prescaler:
-                            ; bit 1 = 0 :    001 = 1:4 scaling for Timer0
-                            ; bit 0 = 1 :
+                            ; bit 1 = 0 :    000 = 1:2 scaling for Timer0 if enabled
+                            ; bit 0 = 0 :
 
     banksel TMR0
 
