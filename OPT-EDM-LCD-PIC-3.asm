@@ -248,25 +248,67 @@
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
+; Software Definitions
+;
+
+;  bits in flags variable
+
+UNUSED_FLAG_BIT0		EQU		.0
+CHAR_AT_CURSOR_STATE	EQU		.1
+
+; bits in flags2 variable
+
+HEADER_BYTE_1_RCVD  EQU 0
+HEADER_BYTE_2_RCVD  EQU 1
+LENGTH_BYTE_VALID   EQU 2
+SERIAL_PACKET_READY EQU 3
+
+; bits in statusFlags variable
+
+SERIAL_COM_ERROR    EQU 0
+I2c_COM_ERROR       EQU 1
+
+SERIAL_RCV_BUF_LEN  EQU .10
+
+SERIAL_XMT_BUF_LEN  EQU .10
+
+; Serial Port Packet Commands
+
+NO_ACTION_CMD               EQU .0
+ACK_CMD                     EQU .1
+SET_OUTPUTS_CMD             EQU .2
+SWITCH_STATES_CMD           EQU .3
+LCD_DATA_CMD                EQU .4
+LCD_INSTRUCTION_CMD         EQU .5
+
+; end of Software Definitions
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
 ; Hardware Definitions
 ;
 ; The ports are defined with suffix _P while the latches are defined with _L.
 ; Read from the ports (movf, btfss, btfsc, etc.).
 ; Write to the latches (movw, bcf, bsf, etc.)
 ;
+; * Note: The LCD E pin is on RB6, the I2CSCL line. If the I2C bus is to be used to communicate
+; with the Switch PIC, then during communication PORTC should be set as input and the RW line set
+; high so when the LCD sees pulses on the E line due to I2CSCL clocking, data will be read from the
+; LCD instead of random stuff being written. The LCD PIC must be the I2C master for this to work.
+; The Switch PIC will ignore clocking on the I2CSCL line caused by strobing of the E line as the
+; I2CSDA line must also be flipped to initiate an I2C communication.
+;
 
-LCD_RW_RS_L     EQU     LATA
-LCD_E_L         EQU     LATB
-SERIAL_IN_P     EQU     PORTA
-SERIAL_OUT_L    EQU     LATB
-LCD_DATA_OUT_L  EQU     LATC
-LCD_DATA_IN_P   EQU     PORTC
+LCD_RW_RS_L         EQU     LATA
+LCD_E_L             EQU     LATB
+LCD_DATA_OUT_L      EQU     LATC
+LCD_DATA_IN_P       EQU     PORTC
 
-SERIAL_IN       EQU     RA0         ; serial data in from Main PIC
 LCD_RW          EQU     RA4         ; data read/write mode control
 LCD_RS          EQU     RA5         ; instruction/data register select
-LCD_E           EQU     RB5         ; data read/write strobe
-SERIAL_OUT      EQU     RB7         ; serial data out to Main PIC
+SERIAL_IN       EQU     RB5         ; EUSART receive pin
+LCD_E           EQU     RB6         ; data strobe to LCD *see note in header above
+SERIAL_OUT      EQU     RB7         ; EUSART transmit pin
 
 ; end of Hardware Definitions
 ;--------------------------------------------------------------------------------------------------
@@ -325,17 +367,7 @@ DISP_ON_CURSOR_OFF_BLINK_OFF_CMD	equ 0x0c	; command to turn display on, cursor o
 BLINK_ON_OFF_CMD_FLAG	EQU	.0
 
 
-
-; control bits in flags
-
-UNUSED_FLAG_BIT0		EQU		.0
-CHAR_AT_CURSOR_STATE	EQU		.1
-
-
 CHAR_AT_CURSOR_STATE_XOR_MASK	EQU		0x02	; use to flip flag bit using XOR
-
-; end of control bits in flags
-
 
 ADDRESS_SET_BIT	EQU		.7		; set in LCD control codes to specify an address change byte
 
@@ -399,6 +431,24 @@ BLINK_ON_FLAG			EQU		0x01
 							; bit 6:
 							; bit 7:
 
+    flags2                  ; bit 0: 1 = first serial port header byte received
+                            ; bit 1: 1 = second serial port header byte received
+                            ; bit 2: 1 = serial port packet length byte received and validated
+                            ; bit 3: 1 = data packet ready for processing
+                            ; bit 4: 0 =
+                            ; bit 5: 0 =
+							; bit 6: 0 =
+							; bit 7: 0 =
+
+    statusFlags             ; bit 0: 0 = one or more com errors from serial have occurred
+                            ; bit 1: 0 = one or more com errors from I2C have occurred
+                            ; bit 2: 0 =
+                            ; bit 3: 0 =
+                            ; bit 4: 0 =
+                            ; bit 5: 0 =
+							; bit 6: 0 =
+							; bit 7: 0 =
+
 	controlByte				; the first byte of each serial data byte pair is stored here
 	lcdData					; stores data byte to be written to the LCD
 
@@ -424,13 +474,30 @@ BLINK_ON_FLAG			EQU		0x01
 	; next variables ONLY written to by interrupt code
 
 	intScratch0				; scratch pad variable for exclusive use by interrupt code
-	bitCount				; used to count number of bits received
-	newSerialByte			; each serial data byte is stored here upon being received
-	newControlByte			; new control bytes stored here by interrupt routine
-							; (this one is reset by main thread)
-	newLCDData				; new data bytes stored here by interrupt routine
 
 	; end of variables ONLY written to by interrupt code
+
+    serialPortErrorCnt      ; number of com errors from Rabbit via serial port
+    slaveI2CErrorCnt        ; number of com errors from Slave PICs via I2C bus
+
+    usartScratch0
+    usartScratch1
+    serialIntScratch0
+    
+    serialRcvPktLen
+    serialRcvPktCnt
+    serialRcvBufPtrH
+    serialRcvBufPtrL
+    serialRcvBufLen
+    
+    serialRcvBuf:SERIAL_RCV_BUF_LEN
+
+    serialXmtBufNumBytes
+    serialXmtBufPtrH
+    serialXmtBufPtrL
+    serialXmtBufLen
+
+    serialXmtBuf:SERIAL_XMT_BUF_LEN
 
  endc
 
@@ -628,34 +695,13 @@ BLINK_ON_FLAG			EQU		0x01
 	nop			            ; put at address 0x0004.
 
 ; interrupt vector at 0x0004
-; NOTE: You must  clear PCLATH before jumping to the interrupt routine - if PCLATH has bits set it
+; NOTE: You must clear PCLATH before jumping to the interrupt routine - if PCLATH has bits set it
 ; will cause a jump into an unexpected program memory bank.
 
-	clrf	STATUS          ; set to known state
     clrf    PCLATH          ; set to bank 0 where the ISR is located
+    goto 	handleInterrupt	; points to interrupt service routine
 
-;NOTE: Don't add any code before the timer reload or it will affect the timer period.
-
-    banksel TMR0
-	movlw	TIMER0_RELOAD_START_BIT_SEARCH_Q
-	movwf	TMR0
-	bcf 	INTCON,T0IF     ; clear the Timer0 overflow interrupt flag
-
-    ; For max efficiency, the interrupt routine only executes when it detects a low bit on the
-    ; serial input, which should be the start of a start bit. Then it processes the entire byte
-    ; before returning. Thus, each time it sees a low on interrupt here, it should be a start bit
-    ; since it completely read in the previous byte.
-
-    banksel SERIAL_IN_P
-	btfss	SERIAL_IN_P,SERIAL_IN
-	goto	handleTimer0Interrupt
-
-	retfie                  		; return and enable interrupts
-
-	; handleInterrupt is skipped in this program -- see note above "Note: handleInterrupt not used."
-    ;goto 	handleInterrupt	; points to interrupt service routine
-
-; end of Reset Vectors
+; end of Power On and Reset Vectors
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
@@ -682,6 +728,8 @@ setup:
  	bcf		LCD_E_L,LCD_E       ; set LCD E strobe low (inactive)
 
     call    setupPortC
+
+    call    setupSerialPort
 
     banksel OPTION_REG
 
@@ -799,7 +847,6 @@ setupPortA:
 
     ; set direction for each pin used
 
-    bsf     TRISA, SERIAL_IN            ; input
     bcf     TRISA, LCD_RW               ; output
     bcf     TRISA, LCD_RS               ; output
     bsf     TRISA, RA1                  ; input - unused - pulled up via external resistor
@@ -832,9 +879,6 @@ setupPortB:
     banksel LATB                        ; init port data latch
     clrf    LATB
 
-    banksel SERIAL_OUT_L
-    bsf     SERIAL_OUT_L,SERIAL_OUT     ; initialize SERIAL_OUT high before changing pin to output
-                                        ; so a start bit won't be transmitted
     banksel ANSELB
     clrf    ANSELB                      ; setup port for all digital I/O
 
@@ -846,7 +890,6 @@ setupPortB:
 
     ; set direction for each pin used
 
-    bcf     TRISB, SERIAL_OUT           ; output
     bcf     TRISB, LCD_E                ; output
 
     return
@@ -915,27 +958,18 @@ start:
 
 	call	displayGreeting
 
-    banksel flags
 
-	movlw	0xff			; 0xff in newControlByte means no new serial data
-	movwf	newControlByte	; it is changed when a new value is received
-
-; begin monitoring the serial data input line from the main PIC for data and instructions
-; to be passed on to the LCD display
+; begin monitoring the serial data from the main PIC for data and instructions to be passed on to
+; the LCD display
 
 ; in between each check for incoming data on the serial line, write one character from the local
 ; LCD buffer to the LCD display
 
 mainLoop:
 
-    banksel flags
+    call    handleReceivedDataIfPresent ; process received packet if available
 
-	movf	newControlByte,W	; if newControlByte is 0xff, then no new data to process
- 	sublw	0xff
- 	btfss	STATUS,Z
-	call	handleDataFromMainPIC
-
-	call	writeNextCharInBufferToLCD ;write one character in the buffer to the LCD
+	call	writeNextCharInBufferToLCD  ;write one character in the local buffer to the LCD
 
     goto    mainLoop
 
@@ -943,56 +977,67 @@ mainLoop:
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
-; handleDataFromMainPIC
+; handleLCDDataPacket
 ;
-; Processes the values in controlByte and lcdData.
-;
-; NOTE: This function must be called faster than the interrupt routine is reading consecutive
-; words. The words have a delay between them which allows for more time between calls to this
-; function.
+; Handles an LCD data byte packet by writing the byte to the local LCD buffer from which it will
+; be written to the LCD on the next scan.
 ;
 ; Control codes other than address changes and clear screen commands are written to the LCD
 ; display immediately. Address changes and data values are used to address and store in the local
 ; LCD character buffer.
 ;
+; On Entry:
+;
+;   FSR0 points to serialRcvBuf
+; 
 
-handleDataFromMainPIC:
+handleLCDDataPacket:
 
-    banksel flags
+    moviw   1[FSR0]                     ; get the switch state value from the packet
 
-	;copy the values to working variables so interrupt routine can use new variables
+    banksel lcdData                     ; store data byte
+    movwf   lcdData
 
-	movf	newControlByte,W
-	movwf	controlByte
-	movf	newLCDData,W
-	movwf	lcdData
+    call    writeToLCDBuffer            ; store byte in the local LCD character buffer
 
-	movlw	0xff					; signal that the new data has been collected
-	movwf	newControlByte
+    goto    resetSerialPortReceiveBuffer
 
-	movf	controlByte,W			; if the control byte is 0, then the second byte is data for the LCD
- 	sublw	0
- 	btfsc	STATUS,Z
-    goto    writeToLCDBuffer		; store byte in the local LCD character buffer
+; end of handleLCDDataPacket
+;--------------------------------------------------------------------------------------------------
 
-    banksel flags
-	movf	controlByte,W			; if the control byte is 1, then the second byte is an instruction for the LCD
- 	sublw	0x1
- 	btfsc	STATUS,Z
-    goto    handleLCDInstruction
+;--------------------------------------------------------------------------------------------------
+; handleLCDInstructionPacket
+;
+; Control codes other than address changes and clear screen commands are written to the LCD
+; display immediately. Address changes are used to set the address in the local LCD buffer.
+;
+; On Entry:
+;
+;   FSR0 points to serialRcvBuf
+; 
 
-	return
+handleLCDInstructionPacket:
 
-; end of handleDataFromMainPIC
+    moviw   1[FSR0]                     ; get the switch state value from the packet
+
+    banksel lcdData                     ; store data byte
+    movwf   lcdData
+
+    call    handleLCDInstruction        ; process the instruction code
+
+    goto    resetSerialPortReceiveBuffer
+
+; end of handleLCDInstructionPacket
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
 ; handleLCDInstruction
 ;
-; Handles LCD instruction codes received from the master PIC. If the control code is an address
-; change or clear screen code, the command is directed to the local LCD character buffer. The LCD
-; display itself is not changed -- that is handled by the code which transmits the buffer contents
-; to the display.
+; Handles the LCD instruction byte in lcdData.
+;
+; Handles LCD instruction codes. If the control code is an address change or clear screen code,
+; the command is directed to the local LCD character buffer. The LCD display itself is not changed
+; -- that is handled by the code which transmits the buffer contents to the display.
 ;
 ; All other control codes are transmitted directly to the LCD display.
 ;
@@ -2042,10 +2087,473 @@ msD1Loop3:
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
-; handleInterrupt
+; handleReceivedDataIfPresent
 ;
-; NOT USED -- handleInterrupt is skipped in this program -- see note in this file:
-;	 "Note: handleInterrupt not used."
+; Processes data in the serial receive buffer if a packet has been received.
+;
+
+handleReceivedDataIfPresent:
+
+    banksel flags2                          ; handle packet in serial receive buffer if ready
+    btfsc   flags2, SERIAL_PACKET_READY
+    goto    handleSerialPacket
+
+    return
+
+; end of handleReceivedDataIfPresent
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleSerialPacket
+;
+; Processes a packet in the serial receive buffer.
+;
+
+handleSerialPacket:
+
+    ;verify the checksum
+
+    banksel flags2
+
+    movf    serialRcvPktLen, W          ; copy number of bytes to variable for counting
+    movwf   serialRcvPktCnt
+
+    movlw   high serialRcvBuf           ; point FSR0 at start of receive buffer
+    movwf   FSR0H
+    movlw   low serialRcvBuf
+    movwf   FSR0L
+
+    clrw                                ; preload W with zero
+
+hspSumLoop:
+
+    addwf   INDF0, W                    ; sum each data byte and the checksum byte at the end
+    incf    FSR0L, F
+    decfsz  serialRcvPktCnt, F
+    goto    hspSumLoop
+
+    movf    WREG, F                         ; test for zero
+    btfsc   STATUS, Z                       ; error if not zero
+    goto    parseCommandFromSerialPacket    ; checksum good so handle command
+
+hspError:
+
+    incf    serialPortErrorCnt, F           ; track errors
+    bsf     statusFlags,SERIAL_COM_ERROR
+
+    goto    resetSerialPortReceiveBuffer
+
+; end of handleSerialPacket
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; parseCommandFromSerialPacket
+;
+; Parses the command byte in a serial packet and performs the appropriate action.
+;
+; On Entry:
+;
+; On Exit:
+;
+; FSR0 points to serialRcvBuf
+;
+
+parseCommandFromSerialPacket:
+
+    movlw   high serialRcvBuf           ; point FSR0 at start of receive buffer
+    movwf   FSR0H
+    movlw   low serialRcvBuf
+    movwf   FSR0L
+
+; parse the command byte by comparing with each command
+
+    movf    INDF0,W
+    sublw   LCD_DATA_CMD
+    btfsc   STATUS,Z
+    goto    handleLCDDataPacket
+
+    movf    INDF0,W
+    sublw   LCD_INSTRUCTION_CMD
+    btfsc   STATUS,Z
+    goto    handleLCDInstructionPacket
+
+    goto    resetSerialPortReceiveBuffer
+
+; end of parseCommandFromSerialPacket
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+;--------------------------------------------------------------------------------------------------
+;   EUSART Serial Port Core Functions
+;
+; Copy this block of code for all basic functions required for serial transmit. Build code, then
+; copy all variables and defines which are shown to be missing.
+;
+;--------------------------------------------------------------------------------------------------
+; setUpSerialXmtBuffer
+;
+; Adds the header bytes, length byte, command byte, and various values from this Master PIC to the
+; start of the serial port transmit buffer and sets serialXmtBufPtrH:L ready to add data bytes.
+;
+; Notes on packet length:
+;
+;   Example with 1 data bytes...
+;
+;   2 bytes (command byte + data byte)
+;   ---
+;   2 total (value passed to calcAndStoreCheckSumSerPrtXmtBuf; number bytes checksummed)
+;
+;   ADD (to determine length byte to insert into packet)
+;
+;   1 checksum byte for the overall packet
+;   3 total (value passed to setUpSerialXmtBuffer (this function) for packet length)
+;
+;   ADD (to determine actual number of bytes to send)
+;
+;   2 header bytes
+;   1 length byte
+;   ---
+;   6 total (value passed to startSerialPortTransmit)
+;
+; On Entry:
+;
+; usartScratch0 should contain the number of data bytes plus one for the checksum byte in the packet
+; usartScratch1 should contain the command byte
+;
+; On Exit:
+;
+; serialXmtBufPtrH:serialXmtBufPtrL will point to the location for the next data byte
+;
+
+setUpSerialXmtBuffer:
+
+    movlw   high serialXmtBuf                   ; set FSR0 to start of transmit buffer
+    movwf   FSR0H
+    movlw   low serialXmtBuf
+    movwf   FSR0L
+
+    banksel usartScratch0
+
+    movlw   0xaa
+    movwi   FSR0++                          ; store first header byte
+
+    movlw   0x55
+    movwi   FSR0++                          ; store first header byte
+
+    movf    usartScratch0,W                 ; store length byte
+    movwi   FSR0++
+
+    movf    usartScratch1,W                 ; store command byte
+    movwi   FSR0++
+
+    return
+
+; end of setUpSerialXmtBuffer
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; startSerialPortTransmit
+;
+; Initiates sending of the bytes in the transmit buffer. The transmission will be performed by an
+; interrupt routine.
+;
+; WREG should contain the number of bytes to send.
+; The bytes to be sent should be in the serial port transmit buffer serialXmtBuf.
+;
+
+startSerialPortTransmit:
+
+    banksel serialXmtBufNumBytes            ; store number of bytes to transmit
+    movwf   serialXmtBufNumBytes
+
+    banksel serialXmtBufPtrH                ; set pointer to start of transmit buffer
+    movlw   high serialXmtBuf
+    movwf   serialXmtBufPtrH
+    movlw   low serialXmtBuf
+    movwf   serialXmtBufPtrL
+
+    banksel PIE1                            ; enable transmit interrupts
+    bsf     PIE1, TXIE                      ; interrupt will trigger when transmit buffers empty
+
+    return
+
+; end of startSerialPortTransmit
+;--------------------------------------------------------------------------------------------------
+ 
+;--------------------------------------------------------------------------------------------------
+; clearSerialPortXmtBuf
+;
+; Sets all bytes up to 255 in the Serial Port transmit buffer to zero. If the buffer is larger
+; than 255 bytes, only the first 255 will be zeroed.
+;
+
+clearSerialPortXmtBuf:
+
+    movlw   high serialXmtBuf                   ; set FSR0 to start of transmit buffer
+    movwf   FSR0H
+    movlw   low serialXmtBuf
+    movwf   FSR0L
+
+    banksel usartScratch0                       ; get buffer size to count number of bytes zeroed
+    movlw   SERIAL_XMT_BUF_LEN
+    movwf   usartScratch0
+
+    movlw   0x00
+
+cSPXBLoop:
+
+    movwi   FSR0++
+    decfsz  usartScratch0,F
+    goto    cSPXBLoop
+
+    return
+
+; end of clearSerialPortXmtBuf
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setupSerialPort
+;
+; Sets up the serial port for communication.
+; Also prepares the receive and transmit buffers for use.
+;
+
+setupSerialPort:
+
+    banksel serialRcvBufLen     ;store buffer length constants in variables for easier maths
+
+    movlw   SERIAL_RCV_BUF_LEN
+    movwf   serialRcvBufLen
+    movlw   SERIAL_XMT_BUF_LEN
+    movwf   serialXmtBufLen
+
+    clrf    serialPortErrorCnt
+    bcf     statusFlags,SERIAL_COM_ERROR
+
+    ;set the baud rate to 57,600 (will actually be 57.97K with 0.64% error)
+    ;for Fosc of 16 Mhz: SYNC = 0, BRGH = 1, BRG16 = 1, SPBRG = 68
+
+    banksel TXSTA
+    bsf     TXSTA, BRGH
+    banksel BAUDCON
+    bsf     BAUDCON, BRG16
+    banksel SPBRGH
+    clrf    SPBRGH
+    banksel SPBRGL
+    movlw   .68
+    movwf   SPBRGL
+
+    ;set UART mode and enable receiver and transmitter
+
+    banksel ANSELB          ; RB5/RB7 digital I/O for use as RX/TX
+    bcf     ANSELB,RB5
+    bcf     ANSELB,RB7
+
+    banksel TRISB
+    bsf     TRISB, TRISB5   ; set RB5/RX to input
+    bcf     TRISB, TRISB7   ; set RB7/TX to output
+
+    banksel TXSTA
+    bcf     TXSTA, SYNC     ; clear bit for asynchronous mode
+    bsf     TXSTA, TXEN     ; enable the transmitter
+    bsf     RCSTA, CREN     ; enable the receiver
+    bsf     RCSTA, SPEN     ; enable EUSART, configure TX/CK I/O pin as an output
+
+    call    resetSerialPortReceiveBuffer
+    call    resetSerialPortTransmitBuffer
+
+    ; enable the receive interrupt; the transmit interrupt (PIE1/TXIE) is not enabled until data is
+    ; ready to be sent
+    ; for interrupts to occur, INTCON/PEIE and INTCON/GIE must be enabled also
+
+    banksel PIE1
+    bsf     PIE1, RCIE      ; enable receive interrupts
+
+    return
+
+; end of setupSerialPort
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; waitForTXIFHigh
+;
+; Waits in a loop for TXIF bit in register PIR1 to go high. This signals that the EUSART serial
+; port transmit buffer is empty and a new byte can be sent.
+;
+
+waitForTXIFHigh:
+
+    ifdef debug_on    ; if debugging, don't wait for interrupt to be set high as the MSSP is not
+    return            ; simulated by the IDE
+    endif
+
+    banksel PIR1
+
+wfth1:
+    btfss   PIR1, TXIF
+    goto    wfth1
+
+    return
+
+; end of waitForTXIFHigh
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; resetSerialPortReceiveBuffer
+;
+; Resets all flags and variables associated with the serial port receive buffer.
+;
+
+resetSerialPortReceiveBuffer:
+
+    banksel flags2
+
+    bcf     flags2, HEADER_BYTE_1_RCVD
+    bcf     flags2, HEADER_BYTE_2_RCVD
+    bcf     flags2, LENGTH_BYTE_VALID
+    bcf     flags2, SERIAL_PACKET_READY
+
+    clrf    serialRcvPktLen
+    clrf    serialRcvPktCnt
+    movlw   high serialRcvBuf
+    movwf   serialRcvBufPtrH
+    movlw   low serialRcvBuf
+    movwf   serialRcvBufPtrL
+
+    banksel RCSTA           ; check for overrun error - must be cleared to receive more data
+    btfss   RCSTA, OERR
+    goto    RSPRBnoOERRError
+
+    bcf     RCSTA, CREN     ; clear error by disabling/enabling receiver
+    bsf     RCSTA, CREN
+
+RSPRBnoOERRError:
+
+    return
+
+; end of resetSerialPortReceiveBuffer
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; resetSerialPortTransmitBuffer
+;
+; Resets all flags and variables associated with the serial port transmit buffer.
+;
+
+resetSerialPortTransmitBuffer:
+
+    banksel flags2
+
+    clrf    serialXmtBufNumBytes
+    movlw   high serialXmtBuf
+    movwf   serialXmtBufPtrH
+    movlw   serialXmtBuf
+    movwf   serialXmtBufPtrL
+
+    return
+
+; end of resetSerialPortTransmitBuffer
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; calcAndStoreCheckSumSerPrtXmtBuf
+;
+; Calculates the checksum for a series of bytes in the serial port transmit buffer. The two
+; header bytes and the length byte are not included in the checksum.
+;
+; On Entry:
+;
+; usartScratch0 contains number of bytes in series, not including the 2 header bytes and 1 length
+; byte
+;
+; On Exit:
+;
+; The checksum will be stored at the end of the series.
+; FSR0 points to the location after the checksum.
+;
+
+calcAndStoreCheckSumSerPrtXmtBuf:
+
+    movlw   high serialXmtBuf                   ; set FSR0 to start of transmit buffer
+    movwf   FSR0H
+    movlw   low serialXmtBuf
+    movwf   FSR0L
+
+    addfsr  FSR0,.3                             ; skip 2 header bytes and 1 length byte
+
+    goto    calculateAndStoreCheckSum
+
+; end calcAndStoreCheckSumSerPrtXmtBuf
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; calculateAndStoreCheckSum
+;
+; Calculates the checksum for a series of bytes.
+;
+; On Entry:
+;
+; usartScratch0 contains number of bytes in series
+; FSR0 points to first byte in series.
+;
+; On Exit:
+;
+; The checksum will be stored at the end of the series.
+; FSR0 points to the location after the checksum.
+;
+
+calculateAndStoreCheckSum:
+
+    call    sumSeries                       ; add all bytes in the buffer
+
+    comf    WREG,W                          ; use two's complement to get checksum value
+    addlw   .1
+
+    movwi   FSR0++                          ; store the checksum at the end of the summed series
+
+    return
+
+; end calculateAndStoreCheckSum
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; sumSeries
+;
+; Calculates the sum of a series of bytes. Only the least significant byte of the sum is retained.
+;
+; On Entry:
+;
+; usartScratch0 contains number of bytes in series.
+; FSR0 points to first byte in series.
+;
+; On Exit:
+;
+; The least significant byte of the sum will be returned in WREG.
+; Z flag will be set if the LSB of the sum is zero.
+; FSR0 points to the location after the last byte summed.
+;
+
+sumSeries:
+
+    banksel usartScratch0
+
+    clrf    WREG
+
+sumSLoop:                       ; sum the series
+
+    addwf   INDF0,W
+    addfsr  INDF0,1
+
+    decfsz  usartScratch0,F
+    goto    sumSLoop
+
+    return
+
+; end sumSeries
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleInterrupt
 ;
 ; All interrupts call this function.  The interrupt flags must be polled to determine which
 ; interrupts actually need servicing.
@@ -2055,16 +2563,24 @@ msD1Loop3:
 ; to the interrupt handler so that it will be handled.
 ;
 ; NOTE NOTE NOTE
-; It is important to use no (or very few) subroutine calls.  The stack is only 8 deep and
+; It is important to use no (or very few) subroutine calls.  The stack is only 16 deep and
 ; it is very bad for the interrupt routine to use it.
-;
-; Data bank 0 should be selected on entry.
 ;
 
 handleInterrupt:
 
-	btfsc 	INTCON,T0IF     		; Timer0 overflow interrupt?
-	goto 	handleTimer0Interrupt	; YES, so process Timer0
+                                    ; INTCON is a core register, no need to banksel
+	btfsc 	INTCON, T0IF     		; Timer0 overflow interrupt?
+	goto 	handleTimer0Int
+
+    banksel PIR1
+
+    btfsc   PIR1, RCIF              ; serial port receive interrupt?
+    goto    handleSerialPortReceiveInt
+
+    btfsc   PIR1, TXIF              ; serial port transmit interrupt?
+    goto    handleSerialPortTransmitInt
+
 
 ; Not used at this time to make interrupt handler as small as possible.
 ;	btfsc 	INTCON, RBIF      		; NO, Change on PORTB interrupt?
@@ -2076,159 +2592,247 @@ INT_ERROR_LP1:		        		; NO, do error recovery
 
 endISR:
 
-	retfie                  		; Return and enable interrupts
+	retfie                  	; Return and enable interrupts
 
 ; end of handleInterrupt
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
-; handleTimer0Interrupt
+; handleTimer0Int
 ;
 ; This function is called when the Timer0 register overflows.
 ;
 ; NOTE NOTE NOTE
-; It is important to use no (or very few) subroutine calls.  The stack is only 8 deep and
+; It is important to use no (or very few) subroutine calls.  The stack is only 16 deep and
 ; it is very bad for the interrupt routine to use it.
 ;
-; NOTE: Because the main thread does not execute while the interrupt code is receiving a word,
-; it must have time between words to perform its worst case processing so it can retrieve each
-; new word before the interrupt overwrites it. Thus the "Main" PIC must have a significant
-; delay between words.
+
+handleTimer0Int:
+
+	bcf 	INTCON,T0IF     ; clear the Timer0 overflow interrupt flag
+
+    ; do stuff here
+    
+    goto    endISR    
+
+; end of handleTimer0Int
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleSerialPortReceiveInt
+;
+; This function is called when a byte(s) has been received by the serial port. The byte(s) will be
+; checked to see if it is a header byte, a packet length byte, or a data byte. Data bytes will be
+; stored in a buffer. If an error occurs in receiving a packet, the function will ignore data
+; received before the error and begin watching for the next packet signature. Upon receiving a
+; complete packet, a flag will be set to notify the main loop.
+;
+; The receive register is a two byte fifo, so two bytes could be ready. This function will process
+; all bytes available.
+;
+; The RCIF flag is cleared by reading all data from the two byte receive FIFO.
+;
+; This code check each byte sequence to see if it starts with a header prefix (0xaa,0x55) followed
+; by a valid length byte. If these are found, the bytes after the length byte are stored in a
+; buffer. If the sequence is not matched or the supposed length byte is larger than the buffer,
+; all flags are reset and the search for the first header byte starts over.
+;
+; Packet format:
+;   0xaa, 0x55, length, data1, data2, data3,...checksum.
+;
+; This interrupt function does not verify the checksum; the main loop should do that if required.
+; Once a packet has been received, a flag is set to alert the main loop that it is ready for
+; processing. All further data will be ignored until the main loop clears that flag. If an error
+; occurs, the data received to that point will be discarded and the search for the next packet
+; begun anew.
+;
+; The packet length byte is the number of data bytes plus one for the checksum byte. It does not
+; include the two header bytes or the length byte itself. If the length byte value is 0 or is
+; greater than the buffer size, the packet will be ignored. If the length byte value is greater
+; than the actual number of bytes sent (but still less than the buffer size), the current packet
+; AND the next packet(s) will be discarded as the interrupt routine will wait until enough bytes
+; are received from subsequent packets to equal the erroneously large length byte value.
+;
+; Thus, only one packet at a time can be handled. The processing required is typically minimal, so
+; the main loop should be able to process each packet before another is received. Some care should
+; be taken by the receiver to not flood the line with packets.
+;
+; The main loop does all the actual processing in order to minimize the overhead of the interrupt.
+;
+; NOTE NOTE NOTE
+; It is important to use no (or very few) subroutine calls.  The stack is only 16 deep and
+; it is very bad for the interrupt routine to use it.
 ;
 
-handleTimer0Interrupt:
+handleSerialPortReceiveInt:
 
-    banksel bitCount
+    ; if the packet ready flag is set, ignore all data until main loop clears it
 
-; if start bit was caught at the very leading edge, need to delay a bit
-; to catch first data bit a little after its leading edge; if the
-; start bit was caught a bit late, this shouldn't be enough to push
-; the timing too late
+    banksel flags2
+    btfss   flags2, SERIAL_PACKET_READY
+    goto    readSerialLoop
 
-; Need to replace this with a delay loop using constants scaled by Fosc as is done with
-;   TIMER0_RELOAD_START_BIT_SEARCH_Q
+    ; packet ready flag set means last packet still being processed, read byte to clear interrupt
+    ; or it will result in an endless interrupt loop, byte is tossed and a resync will occur
 
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
+    banksel RCREG
+    movf    RCREG, W
+    goto    rslExit
 
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
+    ;RCREG is a two byte FIFO and may contain two bytes; read until RCIF flag is clear
 
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
+readSerialLoop:
 
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
+    banksel RCREG
+    movf    RCREG, W        ; get byte from receive fifo
 
-; read the control byte
+    banksel flags2
 
-	movlw	0x8					; preset bit counter to 8 bits to make a byte
-	movwf	bitCount
+    btfsc   flags2, HEADER_BYTE_1_RCVD      ; header byte 1 already received?
+    goto    rsl1                            ; if so, check for header byte 2
 
-readControlByteLoop:
+    bsf     flags2, HEADER_BYTE_1_RCVD      ; preset the flag, will be cleared on fail
 
-	movlw	BIT_TO_BIT_LOOP_DELAY	; delay between bits
-	movwf	intScratch0
-bitLoop1:
-	decfsz	intScratch0,F
-    goto    bitLoop1
+    sublw   0xaa                            ; check for first header byte of 0xaa
+    btfsc   STATUS, Z                       ; equal?
+    goto    rsllp                           ; continue on, leaving flag set
 
-    ;proper bank already selected for SERIAL_IN_P (PortA)
-	movf	SERIAL_IN_P,W		; get serial in port data - bit 0 is the serial data input
-	movwf	intScratch0			; save it so rrf can be performed
-	rrf		intScratch0,F		; rotate bit 0 into the Carry bit
-	rlf		newSerialByte,F		; rotate the Carry bit into the new data byte being constructed
+    goto    rslError                        ; not header byte 1, reset all to restart search
 
- 	decfsz	bitCount,F			; loop for 8 bits
-    goto    readControlByteLoop
+rsl1:
+    btfsc   flags2, HEADER_BYTE_2_RCVD      ; header byte 2 already received?
+    goto    rsl2                            ; if so, check for length byte
 
-	movf	newSerialByte,W		; store in newControlByte where main thread will detect that it has
-	movwf	newControlByte		; been changed from 0xff
-								; (since the control byte and the data byte are read in the
-								;  interrupt before returning, no worry about main thread seeing
-								;  control byte change before data byte read)
+    bsf     flags2, HEADER_BYTE_2_RCVD      ; preset the flag, will be cleared on fail
 
-; delay to get past the final bit
+    sublw   0x55                            ; check for second header byte of 0x55
+    btfsc   STATUS, Z                       ; equal?
+    goto    rsllp                           ; continue on, leaving flag set
 
-	movlw	FINAL_BIT_LOOP_DELAY	; delay a bit extra to get past last bit so it isn't detected
-	movwf	intScratch0				; as the next start bit
-finalBitLoop1:
-	decfsz	intScratch0,F
-    goto    finalBitLoop1
+    goto    rslError                        ; not header byte 2, reset all to restart search
 
-waitForStartBitLoop1:
-    ;proper bank already selected for SERIAL_IN_P (PortA)
- 	btfsc	SERIAL_IN_P,SERIAL_IN	; loop until next start bit detected
-    goto    waitForStartBitLoop1
+rsl2:
+    btfsc   flags2, LENGTH_BYTE_VALID       ; packet length byte already received and validated?
+    goto    rsl3                            ; if so, jump to store data byte
 
-; wait 1/2 bit width after start bit to put timing into center of first data bit
+    movwf   serialRcvPktLen                 ; store the packet length
+    movwf   serialRcvPktCnt                 ; store it again to count down number of bytes stored
 
-	movlw	BIT_TO_BIT_LOOP_DELAY_H	; 1/2 delay between bits
-	movwf	intScratch0
-bitLoop2:
-	decfsz	intScratch0,F
-    goto    bitLoop2
+    bsf     flags2, LENGTH_BYTE_VALID       ; preset the flag, will be cleared on fail
 
-; read the data byte
+    movf    serialRcvPktLen, F              ; check for invalid packet size of 0
+    btfsc   STATUS, Z
+    goto    rslError
 
-	movlw	0x8					; preset bit counter to 8 bits to make a byte
-	movwf	bitCount
+    subwf   serialRcvBufLen, W              ; check if packet length < buffer length
+    btfsc   STATUS, C                       ; carry cleared if borrow was required
+    goto    rsllp                           ; continue on, leaving flag set
+                                            ; if invalid length, reset all to restart search
 
-readDataByteLoop:
+rslError:
 
-	movlw	BIT_TO_BIT_LOOP_DELAY	; delay between bits
-	movwf	intScratch0
-bitLoop3:
-	decfsz	intScratch0,F
-    goto    bitLoop3
+    incf    serialPortErrorCnt, F           ; track errors
+    bsf     statusFlags,SERIAL_COM_ERROR
+    call    resetSerialPortReceiveBuffer    
+    goto    rsllp
 
-    ;proper bank already selected for SERIAL_IN_P (PortA)
-	movf	SERIAL_IN_P,W		; get serial in port data - bit 0 is the serial data input
-	movwf	intScratch0			; save it so rrf can be performed
-	rrf		intScratch0,F		; rotate bit 0 into the Carry bit
-	rlf		newSerialByte,F		; rotate the Carry bit into the new data byte being constructed
+rsl3:
 
- 	decfsz	bitCount,F			; loop for 8 bits
-    goto    readDataByteLoop
+    movwf   serialIntScratch0               ; store the new character
 
-	movf	newSerialByte,W		; store in newLCDData where main thread will use it after
-	movwf	newLCDData			; detecting that newControlByte has been set
+    movf    serialRcvBufPtrH, W             ; load FSR0 with buffer pointer
+    movwf   FSR0H
+    movf    serialRcvBufPtrL, W
+    movwf   FSR0L
 
-; no need to delay for final bit -- won't be looked at until next interrupt
+    movf    serialIntScratch0, W            ; retrieve the new character
+    movwi   INDF0++                         ; store in buffer
 
-; reset the timer to a full count to avoid the time wasted in the interrupt
+    movf    FSR0H, W                        ; save adjusted pointer
+    movwf   serialRcvBufPtrH
+    movf    FSR0L, W
+    movwf   serialRcvBufPtrL
 
-	movlw	TIMER0_RELOAD_START_BIT_SEARCH
-	movwf	TMR0
-	bcf 	INTCON,T0IF     	; clear the Timer0 overflow interrupt flag
+    decfsz  serialRcvPktCnt, F              ; count down number of bytes stored
+    goto    rsllp                           ; continue collecting until counter reaches 0
 
-	retfie                  	; Return and enable interrupts
+rsl4:
 
-; end of handleTimer0Interrupt
+    bsf     flags2, SERIAL_PACKET_READY     ; flag main loop that a data packet is ready
+    goto    rslExit
+
+rsllp:
+
+    banksel PIR1                            ; loop until receive fifo is empty
+    btfsc   PIR1, RCIF
+    goto    readSerialLoop
+
+rslExit:
+
+    banksel RCSTA           ; check for overrun error - must be cleared to receive more data
+    btfss   RCSTA, OERR
+    goto    noOERRError
+
+    bcf     RCSTA, CREN     ; clear error by disabling/enabling receiver
+    bsf     RCSTA, CREN
+
+noOERRError:
+
+    goto    endISR
+
+; end of handleSerialPortReceiveInt
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleSerialPortTransmitInt
+;
+; This function is called when a byte is to be transmitted to the host via serial port. After
+; data is placed in the transmit buffer, the TXIE flag is enabled so this routine gets called
+; as an interrupt whenever the transmit buffer is empty. After all bytes in the buffer have been
+; transmitted, this routine clears the TXIE flag to disable further interrupts.
+;
+; Before the TXIE flag is set to start the process, serialXmtBufNumBytes should be set to value
+; > 0, i.e. the number of valid bytes in the transmit buffer.
+;
+; NOTE NOTE NOTE
+; It is important to use no (or very few) subroutine calls.  The stack is only 16 deep and
+; it is very bad for the interrupt routine to use it.
+;
+; The TXIF flag is cleared in the second instruction cycle after writing data to TXREG.
+;
+
+handleSerialPortTransmitInt:
+
+    banksel serialXmtBufPtrH                ; load FSR0 with buffer pointer
+    movf    serialXmtBufPtrH, W
+    movwf   FSR0H
+    movf    serialXmtBufPtrL, W
+    movwf   FSR0L
+
+    moviw   FSR0++                          ; send next byte in buffer
+    banksel TXREG
+    movwf   TXREG
+
+    banksel serialXmtBufPtrH                ; store updated FSR0 in buffer pointer
+    movf    FSR0H, W
+    movwf   serialXmtBufPtrH
+    movf    FSR0L, W
+    movwf   serialXmtBufPtrL
+
+    decfsz  serialXmtBufNumBytes, F
+    goto    endISR                          ; more data to send, exit with interrupt still enabled
+
+    banksel PIE1                            ; no more data, disable further transmit interrupts
+    bcf     PIE1, TXIE
+
+    goto    endISR
+
+; end of handleSerialPortTransmitInt
+;--------------------------------------------------------------------------------------------------
+;
+;   End of EUSART Serial Port Core Functions
+;
+;--------------------------------------------------------------------------------------------------
 ;--------------------------------------------------------------------------------------------------
 
     END
