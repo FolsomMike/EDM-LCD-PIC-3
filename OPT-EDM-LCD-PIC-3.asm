@@ -268,7 +268,7 @@ SERIAL_PACKET_READY EQU 3
 SERIAL_COM_ERROR    EQU 0
 I2c_COM_ERROR       EQU 1
 
-SERIAL_RCV_BUF_LEN  EQU .10
+SERIAL_RCV_BUF_LEN  EQU .10     ; debug mks -- set this to 64 -- move to new bank!
 
 SERIAL_XMT_BUF_LEN  EQU .10
 
@@ -280,6 +280,7 @@ SET_OUTPUTS_CMD             EQU .2
 SWITCH_STATES_CMD           EQU .3
 LCD_DATA_CMD                EQU .4
 LCD_INSTRUCTION_CMD         EQU .5
+LCD_BLOCK_CMD               EQU .6
 
 ; end of Software Definitions
 ;--------------------------------------------------------------------------------------------------
@@ -2222,7 +2223,7 @@ parseCommandFromSerialPacket:
 ;
 ; On Exit:
 ;
-; serialXmtBufPtrH:serialXmtBufPtrL will point to the location for the next data byte
+; FSR0 and serialXmtBufPtrH:serialXmtBufPtrL will point to the location for the next data byte
 ;
 
 setUpSerialXmtBuffer:
@@ -2245,6 +2246,12 @@ setUpSerialXmtBuffer:
 
     movf    usartScratch1,W                 ; store command byte
     movwi   FSR0++
+
+    banksel serialXmtBufPtrH                ; point serialXmtBufPtrH:L at next buffer position
+    movf    FSR0H,W
+    movwf   serialXmtBufPtrH
+    movf    FSR0L,W
+    movwf   serialXmtBufPtrL
 
     return
 
@@ -2368,6 +2375,7 @@ setupSerialPort:
 
     banksel PIE1
     bsf     PIE1, RCIE      ; enable receive interrupts
+    bcf     PIE1, TXIE      ; disable transmit interrupts (re-enabled when data is ready to xmt)
 
     return
 
@@ -2447,7 +2455,7 @@ resetSerialPortTransmitBuffer:
     clrf    serialXmtBufNumBytes
     movlw   high serialXmtBuf
     movwf   serialXmtBufPtrH
-    movlw   serialXmtBuf
+    movlw   low serialXmtBuf
     movwf   serialXmtBufPtrL
 
     return
@@ -2480,6 +2488,7 @@ calcAndStoreCheckSumSerPrtXmtBuf:
     movwf   FSR0L
 
     addfsr  FSR0,.3                             ; skip 2 header bytes and 1 length byte
+                                                ; command byte is part of checksum
 
     goto    calculateAndStoreCheckSum
 
