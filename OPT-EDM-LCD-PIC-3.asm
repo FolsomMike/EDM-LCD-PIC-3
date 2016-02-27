@@ -94,88 +94,7 @@
 ;--------------------------------------------------------------------------------------------------
 ; Serial Data from Main PIC
 ;
-; These notes are nearly identical for "OPT EDM LCD PIC.ASM" and "EDM MAIN PIC.ASM". Changes to
-; either should be copied to the other. The "LCD" version uses internal 4Mhz clock for Fosc
-; while "MAIN" uses external 16Mhz clock. Thus the timings are different for using Timer0 as
-; an interrupt source.
-;
-; wip mks -- need to change this program to use 16Mhz like the Main PIC. Will have to adjust all
-; timings to make that work.
-;
-; The "Main" PIC sends serial data to the "LCD" PIC via an input port pin. A word is sent for each
-; command/data value:
-;
-; Data Format --
-;
-; the first byte is a control byte and specifies either an LCD command or an LCD character
-; 	0 = data; 1 = command; other may be a command for a different PIC listening on the same line
-;
-; the second byte is either an LCD command or an LCD character
-;
-; PIC16 Timing --
-;
-; These notes were verified using an oscilloscope.
-;
-; The "LCD" PIC is configured to use the internal oscillator of 16Mhz (FOSC). The instruction cycle
-; frequency is Fosc/4. All instructions except branches and gotos take 1 cycle.
-;
-; Timer0 increment frequency is Fosc/4 without prescaler -- in the "LCD" program the prescaler
-; is assigned to the WatchDog, thus Timer0 freq = Fosc/4 (same as the cycle frequency)
-;
-; Serial Timing --
-;
-; each serial bit from the Main PIC is 64 uS wide
-;
-; a single instruction cycle (a nop) on the "LCD" PIC is 1uS wide
-; a goto instruction is 2uS
-; a simple decfsz loop can be used for bit to bit timing
-;
-; Loop Code Timing
-;
-;	loop1: 	decfsz	counter,F
-;    		goto    loop1
-;
-; if you are using a bsf/bcf pair to create a pulse train for verifying this
-; 	measurement, the one cycle of the bcf will be included in the wait time and must be
-;	accounted for by subtracting 1 cycle from the resulting delay times; for the board used
-;	for this test, one cycle = 1 us
-;
-; delay for different starting values of counter:
-;
-;  2 -> 5 uS
-;  3 -> 8 uS (each additional count -> 3 uS)
-; 21 -> 64 uS  ~ ((64 - 5) / 3) + 2
-;
-; in actual use: 19 gives the closest result taking all loop cycles into account
-;
-; Version 1.0 of the LCD PIC code read the word all at one time and then transmitted to the display
-; between words without using an interrupt. The time between words is significantly larger
-; allowing for the time for the display update. For version 2.0, which constantly refreshes the
-; display from a local buffer, the time required for display access code is more than that allowed
-; between incoming serial words. Thus, an interrupt is used to monitor for start bits.
-;
-; For reasonably accurate detection of a start bit, checking the input every 1/3 bit width (21 uS)
-; is desired -- worst case should be detecting the start bit 2/3 after the down transition
-; this should be close enough to successfully detect the remaining 8 bits, allowing for 21 uS
-; of timing slop...
-;
-; ...HOWEVER...
-;
-; ...the interrupt takes up 15 cycles at its quickest and the program would spend all of its
-; time in the interrupt routine. So the input will actually be checked every 32 uS (32 cycles)
-; or one/half the time between bits. This still leaves only 17 cycles or so for the main thread
-; to execute for every call to the interrupt, but the main thread is not time critical.
-;
-; When the interrupt detects a start bit, the main thread will not run again until an entire
-; word is read. This could probably be changed to return to the main thread while waiting for the
-; next bit, but that would require another mode flag check, more lost cycles, and a lot more
-; complexity. The main thread will get 12 cycle blocks when between words and when the "Main" PIC
-; is not sending data.
-;
-; NOTE: Because the main thread does not execute while the interrupt code is receiving a word,
-; it must have time between words to perform its worst case processing so it can retrieve each
-; new word before the interrupt overwrites it. Thus the "Main" PIC must have a significant
-; delay between words.
+; need to add detail -- now uses EUSART
 ;
 ;--------------------------------------------------------------------------------------------------
 
@@ -286,6 +205,54 @@ LCD_BLOCK_CMD               EQU .6
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
+; Hardware Control Description
+;
+; Function by Pin
+;
+; Port A        Pin/Options/Selected Option/Description  (only the most common options are listed)
+;
+; RA0   I/*,IOC,USB-D+                  ~ In ~ unused, pulled high on board version 1.1 and up
+; RA1   I/*,IOC,USB-D-                  ~ In ~ unused, pulled high
+; RA2   not implemented in PIC16f1459   ~ 
+; RA3   I/*,IOC,T1G,MSSP-SS,Vpp,MCLR    ~ In ~ Vpp
+; RA4   I/O,IOC,T1G,CLKOUT,CLKR, AN3    ~ Out ~ LCD R/W
+; RA5   I/O,IOC,T1CKI,CLKIN             ~ Out ~ LCD RS (register select)
+; RA6   not implemented in PIC16f1459
+; RA7   not implemented in PIC16f1459
+;
+; On version 1.0, RA0 is connected to Serial_Data_To_Local_PICs and RB5 is connected to the
+; LCD E Strobe. Those boards are modified with jumpers so that the EUSART RX on RB5 can be used to
+; read serial data. The E Strobe cannot be switched to RA0 since that pin can only be an input on
+; the PIC16F1459.  Those boards are modified with jumpers to connect RA0 and RB5 to feed the serial
+; input into RB5, disconnect RB5 from the E Strobe, and connect RB6 to the E Strobe. RB6 is the 
+; I2CSCL line, but it could still be used by setting by setting the Port C 
+;
+; Port B        Pin/Options/Selected Option/Description  (only the most common options are listed)
+;
+; RB0   not implemented in PIC16f1459
+; RB1   not implemented in PIC16f1459
+; RB2   not implemented in PIC16f1459
+; RB3   not implemented in PIC16f1459
+; RB4   I/O,IOC,MSSP-SDA/SDI,AN10       ~ I ~ I2CSDA, I2C bus data line
+; RB5   I/O,IOC,EUSART-RX/DX,AN11       ~ I ~ EUSART-RX, serial port data in
+; RB6   I/O,IOC,MSSP-SCL/SCK            ~ Out ~ I2CSCL, I2C bus clock line ~ LCD E strobe
+; RB7   I/O,IOC,EUSART-TX/CK            ~ Out ~ EUSART-TX, serial port data out
+;
+; Port C        Pin/Options/Selected Option/Description  (only the most common options are listed)
+;
+; RC0   I/O,AN4,C1/2IN+,ICSPDAT,Vref    ~ In/Out ~ ICSPDAT ~ LCD D0
+; RC1   I/O,AN5,C1/2IN1-,ICSPCLK,INT    ~ In/Out ~ ICSPCLK ~ LCD D1
+; RC2   I/O,AN6,C1/2IN2-,DACOUT1        ~ In/Out ~ LCD D2
+; RC3   I/O,AN7,C1/2IN3-,DACOUT2,CLKR   ~ In/Out ~ LCD D3
+; RC4   I/O,C1/2OUT                     ~ In/Out ~ LCD D4
+; RC5   I/O,T0CKI,PWM1                  ~ In/Out ~ LCD D5
+; RC6   I/O,AN8,PWM2,MSSP-SS            ~ In/Out ~ LCD D6
+; RC7   I/O,AN9,MSSP-SDO                ~ In/Out ~ LCD D7
+;
+;end of Hardware Control Description
+;--------------------------------------------------------------------------------------------------
+               
+;--------------------------------------------------------------------------------------------------
 ; Hardware Definitions
 ;
 ; The ports are defined with suffix _P while the latches are defined with _L.
@@ -300,10 +267,10 @@ LCD_BLOCK_CMD               EQU .6
 ; I2CSDA line must also be flipped to initiate an I2C communication.
 ;
 
-LCD_RW_RS_L         EQU     LATA
-LCD_E_L             EQU     LATB
-LCD_DATA_OUT_L      EQU     LATC
-LCD_DATA_IN_P       EQU     PORTC
+LCD_RW_RS_L     EQU     LATA
+LCD_E_L         EQU     LATB
+LCD_DATA_OUT_L  EQU     LATC
+LCD_DATA_IN_P   EQU     PORTC
 
 LCD_RW          EQU     RA4         ; data read/write mode control
 LCD_RS          EQU     RA5         ; instruction/data register select
@@ -637,6 +604,10 @@ BLINK_ON_FLAG			EQU		0x01
 
 ; Assign variables in RAM - Bank 3
 ; Bank has 80 bytes of free space
+ 
+; WARNING: These buffers may be large enough to overrun the following banks. Linear indirect
+; addressing is used to access them. They may be moved to a higher bank if necessary to make room
+; for variables in this bank.
 
     cblock 0x1a0                        ; starting address
  
