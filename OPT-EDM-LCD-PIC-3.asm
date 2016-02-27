@@ -268,7 +268,7 @@ SERIAL_PACKET_READY EQU 3
 SERIAL_COM_ERROR    EQU 0
 I2c_COM_ERROR       EQU 1
 
-SERIAL_RCV_BUF_LEN  EQU .10     ; debug mks -- set this to 64 -- move to new bank!
+SERIAL_RCV_BUF_LEN  EQU .64
 
 SERIAL_XMT_BUF_LEN  EQU .10
 
@@ -418,7 +418,7 @@ BLINK_ON_FLAG			EQU		0x01
 ; commonly used to reserve RAM space or Code space when producing "absolute" code, as is done here.
 ;
 
-; Assign variables in RAM - Bank 0 - must set RP0:RP1 to 0:0 to access
+; Assign variables in RAM - Bank 0
 ; Bank 0 has 80 bytes of free space
 
  cblock 0x20                ; starting address
@@ -490,21 +490,17 @@ BLINK_ON_FLAG			EQU		0x01
     serialRcvBufPtrH
     serialRcvBufPtrL
     serialRcvBufLen
-    
-    serialRcvBuf:SERIAL_RCV_BUF_LEN
 
     serialXmtBufNumBytes
     serialXmtBufPtrH
     serialXmtBufPtrL
     serialXmtBufLen
 
-    serialXmtBuf:SERIAL_XMT_BUF_LEN
-
  endc
 
 ;-----------------
 
-; Assign variables in RAM - Bank 1 - must set RP0:RP1 to 0:1 to access
+; Assign variables in RAM - Bank 1
 ; Bank 1 has 80 bytes of free space
 
  cblock 0xa0                ; starting address
@@ -531,7 +527,7 @@ BLINK_ON_FLAG			EQU		0x01
 
 ;-----------------
 
-; Assign LCD character buffer in RAM - Bank 2 - RP0:RP1 to 1:0 to access
+; Assign LCD character buffer in RAM - Bank 2
 ; Bank 2 has 80 bytes of free space
 
 ; LCD character buffer -- 4 lines x 20 characters each
@@ -637,6 +633,31 @@ BLINK_ON_FLAG			EQU		0x01
 
 ; WARNING -- the buffer entirely fills Bank 2 -- do not add any variables to this bank
 
+;-----------------
+
+; Assign variables in RAM - Bank 3
+; Bank has 80 bytes of free space
+
+    cblock 0x1a0                        ; starting address
+ 
+    serialRcvBuf:SERIAL_RCV_BUF_LEN    
+    
+    serialXmtBuf:SERIAL_XMT_BUF_LEN    
+    
+    endc
+
+; Compute address of serialRcvBuf in linear data memory for use as a large buffer
+RCV_BUF_OFFSET EQU (serialRcvBuf & 0x7f) - 0x20
+SERIAL_RCV_BUF_LINEAR_ADDRESS   EQU ((serialRcvBuf/.128)*.80)+0x2000+RCV_BUF_OFFSET
+SERIAL_RCV_BUF_LINEAR_LOC_H     EQU high SERIAL_RCV_BUF_LINEAR_ADDRESS
+SERIAL_RCV_BUF_LINEAR_LOC_L     EQU low SERIAL_RCV_BUF_LINEAR_ADDRESS
+    
+; Compute address of serialXmtBuf in linear data memory for use as a large buffer
+XMT_BUF_OFFSET EQU (serialXmtBuf & 0x7f) - 0x20
+SERIAL_XMT_BUF_LINEAR_ADDRESS   EQU ((serialXmtBuf/.128)*.80)+0x2000+XMT_BUF_OFFSET
+SERIAL_XMT_BUF_LINEAR_LOC_H     EQU high SERIAL_XMT_BUF_LINEAR_ADDRESS
+SERIAL_XMT_BUF_LINEAR_LOC_L     EQU low SERIAL_XMT_BUF_LINEAR_ADDRESS
+          
 ;-----------------
 
 ; Define variables in the memory which is mirrored in all RAM banks.
@@ -1001,7 +1022,7 @@ handleLCDDataPacket:
 
     call    writeToLCDBuffer            ; store byte in the local LCD character buffer
 
-    goto    resetSerialPortReceiveBuffer
+    goto    resetSerialPortRcvBuf
 
 ; end of handleLCDDataPacket
 ;--------------------------------------------------------------------------------------------------
@@ -1026,7 +1047,7 @@ handleLCDInstructionPacket:
 
     call    handleLCDInstruction        ; process the instruction code
 
-    goto    resetSerialPortReceiveBuffer
+    goto    resetSerialPortRcvBuf
 
 ; end of handleLCDInstructionPacket
 ;--------------------------------------------------------------------------------------------------
@@ -2119,9 +2140,9 @@ handleSerialPacket:
     movf    serialRcvPktLen, W          ; copy number of bytes to variable for counting
     movwf   serialRcvPktCnt
 
-    movlw   high serialRcvBuf           ; point FSR0 at start of receive buffer
+    movlw   SERIAL_RCV_BUF_LINEAR_LOC_H ; point FSR0 at start of receive buffer
     movwf   FSR0H
-    movlw   low serialRcvBuf
+    movlw   SERIAL_RCV_BUF_LINEAR_LOC_L
     movwf   FSR0L
 
     clrw                                ; preload W with zero
@@ -2142,7 +2163,7 @@ hspError:
     incf    serialPortErrorCnt, F           ; track errors
     bsf     statusFlags,SERIAL_COM_ERROR
 
-    goto    resetSerialPortReceiveBuffer
+    goto    resetSerialPortRcvBuf
 
 ; end of handleSerialPacket
 ;--------------------------------------------------------------------------------------------------
@@ -2161,9 +2182,9 @@ hspError:
 
 parseCommandFromSerialPacket:
 
-    movlw   high serialRcvBuf           ; point FSR0 at start of receive buffer
+    movlw   SERIAL_RCV_BUF_LINEAR_LOC_H ; point FSR0 at start of receive buffer
     movwf   FSR0H
-    movlw   low serialRcvBuf
+    movlw   SERIAL_RCV_BUF_LINEAR_LOC_L
     movwf   FSR0L
 
 ; parse the command byte by comparing with each command
@@ -2178,7 +2199,7 @@ parseCommandFromSerialPacket:
     btfsc   STATUS,Z
     goto    handleLCDInstructionPacket
 
-    goto    resetSerialPortReceiveBuffer
+    goto    resetSerialPortRcvBuf
 
 ; end of parseCommandFromSerialPacket
 ;--------------------------------------------------------------------------------------------------
@@ -2191,7 +2212,7 @@ parseCommandFromSerialPacket:
 ; copy all variables and defines which are shown to be missing.
 ;
 ;--------------------------------------------------------------------------------------------------
-; setUpSerialXmtBuffer
+; setUpSerialXmtBuf
 ;
 ; Adds the header bytes, length byte, command byte, and various values from this Master PIC to the
 ; start of the serial port transmit buffer and sets serialXmtBufPtrH:L ready to add data bytes.
@@ -2206,13 +2227,13 @@ parseCommandFromSerialPacket:
 ;
 ;   ADD (to determine length byte to insert into packet)
 ;
-;   1 checksum byte for the overall packet
+;   +1 checksum byte for the overall packet
 ;   3 total (value passed to setUpSerialXmtBuffer (this function) for packet length)
 ;
 ;   ADD (to determine actual number of bytes to send)
 ;
-;   2 header bytes
-;   1 length byte
+;   +2 header bytes
+;   +1 length byte
 ;   ---
 ;   6 total (value passed to startSerialPortTransmit)
 ;
@@ -2224,13 +2245,14 @@ parseCommandFromSerialPacket:
 ; On Exit:
 ;
 ; FSR0 and serialXmtBufPtrH:serialXmtBufPtrL will point to the location for the next data byte
+; serialXmtBufNumBytes will be zeroed
 ;
 
-setUpSerialXmtBuffer:
+setUpSerialXmtBuf:
 
-    movlw   high serialXmtBuf                   ; set FSR0 to start of transmit buffer
+    movlw   SERIAL_XMT_BUF_LINEAR_LOC_H                   ; set FSR0 to start of transmit buffer
     movwf   FSR0H
-    movlw   low serialXmtBuf
+    movlw   SERIAL_XMT_BUF_LINEAR_LOC_L
     movwf   FSR0L
 
     banksel usartScratch0
@@ -2253,9 +2275,12 @@ setUpSerialXmtBuffer:
     movf    FSR0L,W
     movwf   serialXmtBufPtrL
 
+    clrf   serialXmtBufNumBytes             ; tracks number of bytes added -- must be adjusted
+                                            ; later to include the header bytes, length, command
+
     return
 
-; end of setUpSerialXmtBuffer
+; end of setUpSerialXmtBuf
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
@@ -2264,20 +2289,48 @@ setUpSerialXmtBuffer:
 ; Initiates sending of the bytes in the transmit buffer. The transmission will be performed by an
 ; interrupt routine.
 ;
-; WREG should contain the number of bytes to send.
+; The command byte and all following data bytes are used to compute the checksum which is inserted
+; at the end.
+;
+; On Entry:
+;
+; serialXmtBufNumBytes should contain the number of bytes to send.
 ; The bytes to be sent should be in the serial port transmit buffer serialXmtBuf.
 ;
 
 startSerialPortTransmit:
 
-    banksel serialXmtBufNumBytes            ; store number of bytes to transmit
-    movwf   serialXmtBufNumBytes
+    ; get number of bytes stored in buffer, add one for the command byte, calculate checksum
 
-    banksel serialXmtBufPtrH                ; set pointer to start of transmit buffer
-    movlw   high serialXmtBuf
+    banksel serialXmtBufNumBytes
+    movf    serialXmtBufNumBytes,W
+    addlw   .1
+    movwf   serialXmtBufNumBytes
+    movwf   usartScratch0
+
+    call    calcAndStoreCheckSumSerPrtXmtBuf
+
+    banksel serialXmtBufPtrH                ; set FSR0 and pointer to start of transmit buffer
+    movlw   SERIAL_XMT_BUF_LINEAR_LOC_H
     movwf   serialXmtBufPtrH
-    movlw   low serialXmtBuf
+    movwf   FSR0H
+    movlw   SERIAL_XMT_BUF_LINEAR_LOC_L
     movwf   serialXmtBufPtrL
+    movwf   FSR0L
+
+    ; add 1 to length to account for checksum byte, store in packet length byte
+    ;  packet length = command byte + data bytes + checksum
+
+    banksel serialXmtBufNumBytes
+    movf    serialXmtBufNumBytes,W
+    addlw   .1
+    movwi   2[FSR0]
+
+    ; add 3 to length to account for two header bytes and length byte, store for xmt routine
+    ; this is the total number of bytes to transmit
+
+    addlw   .3
+    movwf   serialXmtBufNumBytes
 
     banksel PIE1                            ; enable transmit interrupts
     bsf     PIE1, TXIE                      ; interrupt will trigger when transmit buffers empty
@@ -2296,9 +2349,9 @@ startSerialPortTransmit:
 
 clearSerialPortXmtBuf:
 
-    movlw   high serialXmtBuf                   ; set FSR0 to start of transmit buffer
+    movlw   SERIAL_XMT_BUF_LINEAR_LOC_H                   ; set FSR0 to start of transmit buffer
     movwf   FSR0H
-    movlw   low serialXmtBuf
+    movlw   SERIAL_XMT_BUF_LINEAR_LOC_L
     movwf   FSR0L
 
     banksel usartScratch0                       ; get buffer size to count number of bytes zeroed
@@ -2366,8 +2419,8 @@ setupSerialPort:
     bsf     RCSTA, CREN     ; enable the receiver
     bsf     RCSTA, SPEN     ; enable EUSART, configure TX/CK I/O pin as an output
 
-    call    resetSerialPortReceiveBuffer
-    call    resetSerialPortTransmitBuffer
+    call    resetSerialPortRcvBuf
+    call    resetSerialPortXmtBuf
 
     ; enable the receive interrupt; the transmit interrupt (PIE1/TXIE) is not enabled until data is
     ; ready to be sent
@@ -2407,12 +2460,12 @@ wfth1:
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
-; resetSerialPortReceiveBuffer
+; resetSerialPortRcvBuf
 ;
 ; Resets all flags and variables associated with the serial port receive buffer.
 ;
 
-resetSerialPortReceiveBuffer:
+resetSerialPortRcvBuf:
 
     banksel flags2
 
@@ -2423,9 +2476,9 @@ resetSerialPortReceiveBuffer:
 
     clrf    serialRcvPktLen
     clrf    serialRcvPktCnt
-    movlw   high serialRcvBuf
+    movlw   SERIAL_RCV_BUF_LINEAR_LOC_H
     movwf   serialRcvBufPtrH
-    movlw   low serialRcvBuf
+    movlw   SERIAL_RCV_BUF_LINEAR_LOC_L
     movwf   serialRcvBufPtrL
 
     banksel RCSTA           ; check for overrun error - must be cleared to receive more data
@@ -2439,28 +2492,28 @@ RSPRBnoOERRError:
 
     return
 
-; end of resetSerialPortReceiveBuffer
+; end of resetSerialPortRcvBuf
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
-; resetSerialPortTransmitBuffer
+; resetSerialPortXmtBuf
 ;
 ; Resets all flags and variables associated with the serial port transmit buffer.
 ;
 
-resetSerialPortTransmitBuffer:
+resetSerialPortXmtBuf:
 
     banksel flags2
 
     clrf    serialXmtBufNumBytes
-    movlw   high serialXmtBuf
+    movlw   SERIAL_XMT_BUF_LINEAR_LOC_H
     movwf   serialXmtBufPtrH
-    movlw   low serialXmtBuf
+    movlw   SERIAL_XMT_BUF_LINEAR_LOC_L
     movwf   serialXmtBufPtrL
 
     return
 
-; end of resetSerialPortTransmitBuffer
+; end of resetSerialPortXmtBuf
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
@@ -2482,9 +2535,9 @@ resetSerialPortTransmitBuffer:
 
 calcAndStoreCheckSumSerPrtXmtBuf:
 
-    movlw   high serialXmtBuf                   ; set FSR0 to start of transmit buffer
+    movlw   SERIAL_XMT_BUF_LINEAR_LOC_H                   ; set FSR0 to start of transmit buffer
     movwf   FSR0H
-    movlw   low serialXmtBuf
+    movlw   SERIAL_XMT_BUF_LINEAR_LOC_L
     movwf   FSR0L
 
     addfsr  FSR0,.3                             ; skip 2 header bytes and 1 length byte
@@ -2610,6 +2663,8 @@ endISR:
 ; handleTimer0Int
 ;
 ; This function is called when the Timer0 register overflows.
+;
+; TMR0 is never reloaded -- thus it wraps around and does a full count for each interrupt.
 ;
 ; NOTE NOTE NOTE
 ; It is important to use no (or very few) subroutine calls.  The stack is only 16 deep and
@@ -2742,7 +2797,7 @@ rslError:
 
     incf    serialPortErrorCnt, F           ; track errors
     bsf     statusFlags,SERIAL_COM_ERROR
-    call    resetSerialPortReceiveBuffer    
+    call    resetSerialPortRcvBuf    
     goto    rsllp
 
 rsl3:
