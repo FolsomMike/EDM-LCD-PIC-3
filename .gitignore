@@ -23,6 +23,7 @@ nbproject/private/configurations.xml
 nbproject/private/private.xml
 nbproject/project.xml
 nbproject/private/SuppressibleMessageMemo.properties
+*.fil
 *.mch
 *.MCH
 *.o
