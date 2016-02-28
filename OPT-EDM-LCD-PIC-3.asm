@@ -92,9 +92,35 @@
 ; first and then the goto executed.
 ;
 ;--------------------------------------------------------------------------------------------------
-; Serial Data from Main PIC
+; Serial Data Timing
 ;
-; need to add detail -- now uses EUSART
+; Each transmission is a packet starting with two header bytes (0xaa,0x55), a packet length byte
+; (length of all data bytes plus checksum byte...the packet command byte is the first data byte).
+;
+; Upon detecting a complete packet, the main loop saves a copy of the length byte and immediately
+; releases the receive buffer so a new packet can be received by the interrupt routine. If a new
+; packet begins arriving immediately, it can overwrite the two header bytes with no conflict as
+; they are always the same anyway. It can overwrite the length byte so long as the main code has
+; already saved the copy. It can overwrite the command byte if the main code has already parsed it.
+;
+; In this manner, the interrupt code can begin overwriting the buffer with a new packet before the
+; main code is completely finished with the previous one.
+;
+; The main code must execute handleSerialPacket before the buffer is released for the next packet.
+; The time allowed for that is the delay between packets plus the transmission time for the first
+; header byte:
+;
+;   delay + 10 bits * 17 uS = delay + 170 uS or delay + 340 * 4 = delay + 680 opcode cycles
+;        for Fosc = 16Mhz
+;
+; If a new packet begins to arrive before the main code can execute handleSerialPacket, the new
+; packet will be ignored.
+;
+; At 57,600 baud, the transmission time for the two header bytes is:
+;   2 bytes * 10 bits * 17 uS = 340 uS or 340 * 4 = 1360 opcode cycles for Fosc = 16Mhz
+;
+; Thus the main code has 1360 instruction cycles to at least retrieve the length byte. From there
+; it just needs to process the data in the packet faster than the interrupt can overwrite it.
 ;
 ;--------------------------------------------------------------------------------------------------
 
@@ -448,9 +474,14 @@ BLINK_ON_FLAG			EQU		0x01
     serialPortErrorCnt      ; number of com errors from Rabbit via serial port
     slaveI2CErrorCnt        ; number of com errors from Slave PICs via I2C bus
 
+    serialRcvPktLenMain     ; used by main to process completed packets
+    serialRcvPktCntMain     ; used by main to process completed packets
+
     usartScratch0
     usartScratch1
     serialIntScratch0
+    
+    ; used by serial receive interrupt
     
     serialRcvPktLen
     serialRcvPktCnt
@@ -458,6 +489,8 @@ BLINK_ON_FLAG			EQU		0x01
     serialRcvBufPtrL
     serialRcvBufLen
 
+    ; used by serial transmit interrupt
+    
     serialXmtBufNumBytes
     serialXmtBufPtrH
     serialXmtBufPtrL
@@ -688,11 +721,11 @@ SERIAL_XMT_BUF_LINEAR_LOC_L     EQU low SERIAL_XMT_BUF_LINEAR_ADDRESS
 	nop			            ; put at address 0x0004.
 
 ; interrupt vector at 0x0004
-; NOTE: You must clear PCLATH before jumping to the interrupt routine - if PCLATH has bits set it
-; will cause a jump into an unexpected program memory bank.
+; NOTE: You must set PCLATH before jumping to the interrupt routine - if PCLATH is wrong the
+; jump will fail.
 
-    clrf    PCLATH          ; set to bank 0 where the ISR is located
-    goto 	handleInterrupt	; points to interrupt service routine
+    movlp   high handleInterrupt
+    goto    handleInterrupt	; points to interrupt service routine
 
 ; end of Power On and Reset Vectors
 ;--------------------------------------------------------------------------------------------------
@@ -722,8 +755,10 @@ setup:
 
     call    setupPortC
 
+    movlp   high setupSerialPort
     call    setupSerialPort
-
+    movlp   high setup
+    
     banksel OPTION_REG
 
     movlw   0x58
@@ -979,21 +1014,23 @@ mainLoop:
 ; display immediately. Address changes and data values are used to address and store in the local
 ; LCD character buffer.
 ;
+; The first byte is the packet command byte, followed by the LCD data byte.
+;
 ; On Entry:
 ;
-;   FSR0 points to serialRcvBuf
+;   FSR1 points to serialRcvBuf
 ; 
 
 handleLCDDataPacket:
 
-    moviw   1[FSR0]                     ; get the switch state value from the packet
+    moviw   1[FSR1]                     ; get the switch state value from the packet
 
     banksel lcdData                     ; store data byte
     movwf   lcdData
 
     call    writeToLCDBuffer            ; store byte in the local LCD character buffer
 
-    goto    resetSerialPortRcvBuf
+    return
 
 ; end of handleLCDDataPacket
 ;--------------------------------------------------------------------------------------------------
@@ -1004,6 +1041,8 @@ handleLCDDataPacket:
 ; Control codes other than address changes and clear screen commands are written to the LCD
 ; display immediately. Address changes are used to set the address in the local LCD buffer.
 ;
+; The first byte is the packet command byte, followed by the LCD instruction byte.
+;
 ; On Entry:
 ;
 ;   FSR0 points to serialRcvBuf
@@ -1011,18 +1050,73 @@ handleLCDDataPacket:
 
 handleLCDInstructionPacket:
 
-    moviw   1[FSR0]                     ; get the switch state value from the packet
+    moviw   1[FSR1]                     ; get the switch state value from the packet
 
     banksel lcdData                     ; store data byte
     movwf   lcdData
 
     call    handleLCDInstruction        ; process the instruction code
 
-    goto    resetSerialPortRcvBuf
+    return
 
 ; end of handleLCDInstructionPacket
 ;--------------------------------------------------------------------------------------------------
 
+;--------------------------------------------------------------------------------------------------
+; handleLCDBlockPacket
+;
+; Handles a block packet containing one or more LCD instructions and LCD data.   
+;
+; The first byte is the packet command byte, followed by the LCD instructions/data bytes.
+; Each instruction or data set consists of a two byte sequence -- if first byte is 0x00 then the
+; following byte is a data byte; if first byte is 0x01 then the following byte is an instruction
+; byte.
+;
+; On Entry:
+;
+;   FSR1 points to serialRcvBuf
+; 
+
+handleLCDBlockPacket:
+
+    addfsr  FSR1,1                      ; skip the packet command byte
+
+    movf    serialRcvPktLenMain,W       ; load counter
+    movwf   serialRcvPktCntMain
+    decf    serialRcvPktCntMain,F       ; account for packet command byte
+    decf    serialRcvPktCntMain,F       ; account for checksum byte
+    
+hLBPLoop1:
+    
+    moviw   1[FSR1]                     ; get and store the instruction/data byte
+    banksel lcdData
+    movwf   lcdData
+
+    moviw   FSR1++                      ; get instruction/data tag    
+    addfsr  FSR1,1                      ; skip the instruction/data byte
+    
+    btfss   STATUS,Z
+    goto    hLBPDoInstr
+
+    call    writeToLCDBuffer             ; process the data byte    
+    goto    hLBPNext
+    
+hLBPDoInstr:
+    
+    call    handleLCDInstruction        ; process the instruction code
+
+hLBPNext:    
+    
+    banksel serialRcvPktCntMain
+    decf    serialRcvPktCntMain,F       ; count the tag byte    
+    decfsz  serialRcvPktCntMain,F       ; count the instruction/data byte and check for end
+    goto    hLBPLoop1   
+    
+    return
+
+; end of handleLCDBlockPacket
+;--------------------------------------------------------------------------------------------------
+    
 ;--------------------------------------------------------------------------------------------------
 ; handleLCDInstruction
 ;
@@ -2084,6 +2178,7 @@ msD1Loop3:
 ;
 ; Processes data in the serial receive buffer if a packet has been received.
 ;
+; 
 
 handleReceivedDataIfPresent:
 
@@ -2104,12 +2199,20 @@ handleReceivedDataIfPresent:
 
 handleSerialPacket:
 
+    banksel serialRcvPktLen
+
+    movf    serialRcvPktLen,W           ; store the packet length variable so the receive interrupt
+    movwf   serialRcvPktLenMain         ; can overwrite it if a new packet arrives
+        
+    call    resetSerialPortRcvBuf       ; allow the serial receive interrupt to start a new packet
+                                        ; see "Serial Data Timing" notes at the top of this page
+    
     ;verify the checksum
 
-    banksel flags2
-
-    movf    serialRcvPktLen, W          ; copy number of bytes to variable for counting
-    movwf   serialRcvPktCnt
+    banksel serialRcvPktLenMain
+  
+    movf    serialRcvPktLenMain, W      ; copy number of bytes to variable for counting
+    movwf   serialRcvPktCntMain
 
     movlw   SERIAL_RCV_BUF_LINEAR_LOC_H ; point FSR0 at start of receive buffer
     movwf   FSR0H
@@ -2122,7 +2225,7 @@ hspSumLoop:
 
     addwf   INDF0, W                    ; sum each data byte and the checksum byte at the end
     incf    FSR0L, F
-    decfsz  serialRcvPktCnt, F
+    decfsz  serialRcvPktCntMain, F
     goto    hspSumLoop
 
     movf    WREG, F                         ; test for zero
@@ -2134,7 +2237,7 @@ hspError:
     incf    serialPortErrorCnt, F           ; track errors
     bsf     statusFlags,SERIAL_COM_ERROR
 
-    goto    resetSerialPortRcvBuf
+    return
 
 ; end of handleSerialPacket
 ;--------------------------------------------------------------------------------------------------
@@ -2148,29 +2251,34 @@ hspError:
 ;
 ; On Exit:
 ;
-; FSR0 points to serialRcvBuf
+; FSR1 points to the start of the serial port receive buffer
 ;
 
 parseCommandFromSerialPacket:
 
     movlw   SERIAL_RCV_BUF_LINEAR_LOC_H ; point FSR0 at start of receive buffer
-    movwf   FSR0H
+    movwf   FSR1H
     movlw   SERIAL_RCV_BUF_LINEAR_LOC_L
-    movwf   FSR0L
+    movwf   FSR1L
 
 ; parse the command byte by comparing with each command
 
-    movf    INDF0,W
+    movf    INDF1,W
+    sublw   LCD_BLOCK_CMD
+    btfsc   STATUS,Z
+    goto    handleLCDBlockPacket
+
+    movf    INDF1,W
     sublw   LCD_DATA_CMD
     btfsc   STATUS,Z
     goto    handleLCDDataPacket
 
-    movf    INDF0,W
+    movf    INDF1,W
     sublw   LCD_INSTRUCTION_CMD
     btfsc   STATUS,Z
     goto    handleLCDInstructionPacket
-
-    goto    resetSerialPortRcvBuf
+    
+    return
 
 ; end of parseCommandFromSerialPacket
 ;--------------------------------------------------------------------------------------------------
@@ -2458,9 +2566,13 @@ resetSerialPortRcvBuf:
 
     bcf     RCSTA, CREN     ; clear error by disabling/enabling receiver
     bsf     RCSTA, CREN
-
+        
 RSPRBnoOERRError:
 
+    banksel RCREG           ; clear any pending interrupt by clearing both bytes of the buffer
+    movf    RCREG, W
+    movf    RCREG, W
+        
     return
 
 ; end of resetSerialPortRcvBuf
@@ -2604,14 +2716,19 @@ handleInterrupt:
 
                                     ; INTCON is a core register, no need to banksel
 	btfsc 	INTCON, T0IF     		; Timer0 overflow interrupt?
-	goto 	handleTimer0Int
+	call 	handleTimer0Int         ; call so the serial port interrupts will get checked
+                                    ;  if not, the timer interrupt can block them totally
 
     banksel PIR1
-
-    btfsc   PIR1, RCIF              ; serial port receive interrupt?
+    btfsc   PIR1, RCIF              ; serial port receive interrupt
     goto    handleSerialPortReceiveInt
 
-    btfsc   PIR1, TXIF              ; serial port transmit interrupt?
+    banksel PIE1                    ; only handle UART xmt interrupt if enabled
+    btfss   PIE1, TXIE              ;  the TXIF flag is always set whenever the buffer is empty
+    retfie                          ;  and should be ignored unless the interrupt is enabled
+    
+    banksel PIR1
+    btfsc   PIR1, TXIF              ; serial port transmit interrupt
     goto    handleSerialPortTransmitInt
 
 
@@ -2648,7 +2765,7 @@ handleTimer0Int:
 
     ; do stuff here
     
-    goto    endISR    
+    return
 
 ; end of handleTimer0Int
 ;--------------------------------------------------------------------------------------------------
