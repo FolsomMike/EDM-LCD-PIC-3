@@ -211,7 +211,7 @@ SERIAL_PACKET_READY EQU 3
 ; bits in statusFlags variable
 
 SERIAL_COM_ERROR    EQU 0
-I2c_COM_ERROR       EQU 1
+I2C_COM_ERROR       EQU 1
 
 SERIAL_RCV_BUF_LEN  EQU .64
 
@@ -249,8 +249,8 @@ LCD_BLOCK_CMD               EQU .6
 ; On version 1.0, RA0 is connected to Serial_Data_To_Local_PICs and RB5 is connected to the
 ; LCD E Strobe. Those boards are modified with jumpers so that the EUSART RX on RB5 can be used to
 ; read serial data. The E Strobe cannot be switched to RA0 since that pin can only be an input on
-; the PIC16F1459.  Those boards are modified with jumpers to connect RA0 and RB5 to feed the serial
-; input into RB5, disconnect RB5 from the E Strobe, and connect RB6 to the E Strobe. RB6 is the 
+; the PIC16F1459.  Those boards are modified with jumpers to disconnect RA0 and connect RB5 to the
+; the serial input, disconnect RB5 from the E Strobe, and connect RB6 to the E Strobe. RB6 is the 
 ; I2CSCL line, but it could still be used by setting by setting the Port C 
 ;
 ; Port B        Pin/Options/Selected Option/Description  (only the most common options are listed)
@@ -468,6 +468,7 @@ BLINK_ON_FLAG			EQU		0x01
 	; next variables ONLY written to by interrupt code
 
 	intScratch0				; scratch pad variable for exclusive use by interrupt code
+    intScratch1
 
 	; end of variables ONLY written to by interrupt code
 
@@ -779,9 +780,7 @@ setup:
 
 ; enable the interrupts
 
-    banksel INTCON
-
-	bsf	    INTCON,PEIE	    ; enable peripheral interrupts (Timer0 is a peripheral)
+    bsf     INTCON,PEIE	    ; enable peripheral interrupts (Timer0 is a peripheral)
     bsf     INTCON,T0IE     ; enabe TMR0 interrupts
     bsf     INTCON,GIE      ; enable all interrupts
 
@@ -915,7 +914,7 @@ setupPortB:
     banksel TRISB
     movlw   b'11111111'                 ; first set all to inputs
     movwf   TRISB
-
+    
     ; set direction for each pin used
 
     bcf     TRISB, LCD_E                ; output
@@ -979,7 +978,7 @@ start:
 	call	setup			; set up main variables and hardware
 
 	call    initLCD
-
+    
 	call	setUpLCDCharacterBuffer
 
 	call	clearLCDLocalBuffer
@@ -997,8 +996,8 @@ mainLoop:
 
     movlp   high handleReceivedDataIfPresent
     call    handleReceivedDataIfPresent ; process received packet if available
-    movlp   mainLoop
-    
+    movlp   high mainLoop
+
 	call	writeNextCharInBufferToLCD  ;write one character in the local buffer to the LCD
 
     goto    mainLoop
@@ -1025,7 +1024,7 @@ mainLoop:
 
 handleLCDDataPacket:
 
-    moviw   1[FSR1]                     ; get the switch state value from the packet
+    moviw   1[FSR1]                     ; get the data byte from the packet
 
     banksel lcdData                     ; store data byte
     movwf   lcdData
@@ -1052,13 +1051,12 @@ handleLCDDataPacket:
 
 handleLCDInstructionPacket:
 
-    moviw   1[FSR1]                     ; get the switch state value from the packet
-
+    moviw   1[FSR1]                     ; get the data byte from the packet
     banksel lcdData                     ; store data byte
     movwf   lcdData
-
+    
     call    handleLCDInstruction        ; process the instruction code
-
+    
     return
 
 ; end of handleLCDInstructionPacket
@@ -1080,7 +1078,7 @@ handleLCDInstructionPacket:
 ; 
 
 handleLCDBlockPacket:
-
+        
     addfsr  FSR1,1                      ; skip the packet command byte
 
     movf    serialRcvPktLenMain,W       ; load counter
@@ -1089,7 +1087,7 @@ handleLCDBlockPacket:
     decf    serialRcvPktCntMain,F       ; account for checksum byte
     
 hLBPLoop1:
-    
+        
     moviw   1[FSR1]                     ; get and store the instruction/data byte
     banksel lcdData
     movwf   lcdData
@@ -1132,7 +1130,7 @@ hLBPNext:
 ;
 
 handleLCDInstruction:
-
+    
     banksel flags
 
 	; catch clear screen command
@@ -1150,7 +1148,7 @@ notClearScreenCmd:
 
     btfss   lcdData,ADDRESS_SET_BIT
 	goto	notAddressChangeCmd
-
+        
 	goto	setLCDBufferWriteAddress
 
 notAddressChangeCmd:
@@ -1545,7 +1543,7 @@ setLCDOnOffAndCursorAndBlink:
 ;
 
 writeToLCDBuffer:
-
+        
     banksel lcdData
 
 	movf	lcdData,W		; get the byte to be stored
@@ -1850,7 +1848,7 @@ displayGreeting:
     call    writeToLCDBuffer
     banksel flags
 
-	movlw	'1'
+	movlw	'2'
 	movwf	lcdData
     call    writeToLCDBuffer
     banksel flags
@@ -2188,14 +2186,14 @@ msD1Loop3:
 ;
 
 parseCommandFromSerialPacket:
-
+        
     movlw   SERIAL_RCV_BUF_LINEAR_LOC_H ; point FSR0 at start of receive buffer
     movwf   FSR1H
     movlw   SERIAL_RCV_BUF_LINEAR_LOC_L
     movwf   FSR1L
 
 ; parse the command byte by comparing with each command
-
+    
     movf    INDF1,W
     sublw   LCD_BLOCK_CMD
     btfsc   STATUS,Z
@@ -2319,7 +2317,7 @@ handleReceivedDataIfPresent:
 ;
 
 handleSerialPacket:
-
+        
     banksel serialRcvPktLen
 
     movf    serialRcvPktLen,W           ; store the packet length variable so the receive interrupt
@@ -2345,7 +2343,7 @@ handleSerialPacket:
 hspSumLoop:
 
     addwf   INDF0, W                    ; sum each data byte and the checksum byte at the end
-    incf    FSR0L, F
+    addfsr  FSR0,1
     decfsz  serialRcvPktCntMain, F
     goto    hspSumLoop
 
@@ -2470,17 +2468,27 @@ setupSerialPort:
     clrf    serialPortErrorCnt
     bcf     statusFlags,SERIAL_COM_ERROR
 
-    ;set the baud rate to 57,600 (will actually be 57.97K with 0.64% error)
+    ;to set the baud rate to 57,600 (will actually be 57.97K with 0.64% error)
     ;for Fosc of 16 Mhz: SYNC = 0, BRGH = 1, BRG16 = 1, SPBRG = 68
+    
+    ;to set the baud rate to 19,200 (will actually be 19.23K with 0.16% error)
+    ;for Fosc of 16 Mhz: SYNC = 0, BRGH = 1, BRG16 = 1, SPBRG = 207
+    
+    ;to set the baud rate to 9,600 (will actually be 9592 with 0.08% error)
+    ;for Fosc of 16 Mhz: SYNC = 0, BRGH = 1, BRG16 = 1, SPBRG = 416 (0x1a0)
 
+    ;to set the baud rate to 2,400 (will actually be 2399.5 with 0.02% error)
+    ;for Fosc of 16 Mhz: SYNC = 0, BRGH = 1, BRG16 = 1, SPBRG = 1666 (0x682)
+    
     banksel TXSTA
     bsf     TXSTA, BRGH
     banksel BAUDCON
     bsf     BAUDCON, BRG16
     banksel SPBRGH
-    clrf    SPBRGH
+    movlw   0x01
+    movwf   SPBRGH
     banksel SPBRGL
-    movlw   .68
+    movlw   0xa0
     movwf   SPBRGL
 
     ;set UART mode and enable receiver and transmitter
@@ -2845,7 +2853,7 @@ readSerialLoop:
     goto    rsl1                            ; if so, check for header byte 2
 
     bsf     flags2, HEADER_BYTE_1_RCVD      ; preset the flag, will be cleared on fail
-
+    
     sublw   0xaa                            ; check for first header byte of 0xaa
     btfsc   STATUS, Z                       ; equal?
     goto    rsllp                           ; continue on, leaving flag set
@@ -2857,7 +2865,7 @@ rsl1:
     goto    rsl2                            ; if so, check for length byte
 
     bsf     flags2, HEADER_BYTE_2_RCVD      ; preset the flag, will be cleared on fail
-
+        
     sublw   0x55                            ; check for second header byte of 0x55
     btfsc   STATUS, Z                       ; equal?
     goto    rsllp                           ; continue on, leaving flag set
@@ -2890,7 +2898,7 @@ rslError:
     goto    rsllp
 
 rsl3:
-
+        
     movwf   serialIntScratch0               ; store the new character
 
     movf    serialRcvBufPtrH, W             ; load FSR0 with buffer pointer
