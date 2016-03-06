@@ -182,12 +182,12 @@
 ; Defines
 ;
 
-; COMMENT OUT "#define debug 1" line before using code in system.
-; Defining debug will insert code which simplifies simulation by skipping code which waits on
+; COMMENT OUT "#define DEBUG_MODE" line before using code in system.
+; Defining DEBUG_MODE will insert code which simplifies simulation by skipping code which waits on
 ; stimulus and performing various other actions which make the simulation run properly.
-; Search for "ifdef debug" to find all examples of such code.
+; Search for "DEBUG_MODE" to find all examples of such code.
 
-;#define debug 1     ; set debug testing "on"
+;#define DEBUG_MODE 1     ; set DEBUG_MODE testing "on"
 
 ; end of Defines
 ;--------------------------------------------------------------------------------------------------
@@ -2105,7 +2105,7 @@ smallDelay:
 
     banksel smallDelayCnt
 
-    ifdef debug       ; if debugging, don't delay
+    ifdef DEBUG_MODE       ; if debugging, don't delay
     return
     endif
 
@@ -2141,7 +2141,7 @@ msDelay:
 
     banksel msDelayCnt
 
-    ifdef debug                 ; if debugging, don't delay
+    ifdef DEBUG_MODE                 ; if debugging, don't delay
     return
     endif
 
@@ -2532,7 +2532,7 @@ setupSerialPort:
 
 waitForTXIFHigh:
 
-    ifdef debug_on    ; if debugging, don't wait for interrupt to be set high as the MSSP is not
+    ifdef DEBUG_MODE  ; if debugging, don't wait for interrupt to be set high as the MSSP is not
     return            ; simulated by the IDE
     endif
 
@@ -2557,11 +2557,6 @@ resetSerialPortRcvBuf:
 
     banksel flags2
 
-    bcf     flags2, HEADER_BYTE_1_RCVD
-    bcf     flags2, HEADER_BYTE_2_RCVD
-    bcf     flags2, LENGTH_BYTE_VALID
-    bcf     flags2, SERIAL_PACKET_READY
-
     clrf    serialRcvPktLen
     clrf    serialRcvPktCnt
     movlw   SERIAL_RCV_BUF_LINEAR_LOC_H
@@ -2581,7 +2576,14 @@ RSPRBnoOERRError:
     banksel RCREG           ; clear any pending interrupt by clearing both bytes of the buffer
     movf    RCREG, W
     movf    RCREG, W
-        
+    
+    banksel flags2
+
+    bcf     flags2, HEADER_BYTE_1_RCVD
+    bcf     flags2, HEADER_BYTE_2_RCVD
+    bcf     flags2, LENGTH_BYTE_VALID
+    bcf     flags2, SERIAL_PACKET_READY
+    
     return
 
 ; end of resetSerialPortRcvBuf
