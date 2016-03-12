@@ -1,4 +1,4 @@
-02_EDM-LCD-PIC-3
+03_EDM-LCD-PIC-3
 
 This file is for use on Model III setups which have a PIC on the User Interface board to drive the LCD.
 
