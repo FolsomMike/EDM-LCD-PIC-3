@@ -246,12 +246,14 @@ LCD_BLOCK_CMD               EQU .6
 ; RA6   not implemented in PIC16f1459
 ; RA7   not implemented in PIC16f1459
 ;
-; On version 1.0, RA0 is connected to Serial_Data_To_Local_PICs and RB5 is connected to the
-; LCD E Strobe. Those boards are modified with jumpers so that the EUSART RX on RB5 can be used to
-; read serial data. The E Strobe cannot be switched to RA0 since that pin can only be an input on
+; On version Gen III 1.0, RA0 is connected to Serial_Data_To_Local_PICs and RB5 is connected to the
+; LCD E Strobe. Those boards can be modified with jumpers so that the EUSART RX on RB5 can be used
+; to read serial data. The E Strobe cannot be switched to RA0 since that pin can only be an input on
 ; the PIC16F1459.  Those boards are modified with jumpers to disconnect RA0 and connect RB5 to the
 ; the serial input, disconnect RB5 from the E Strobe, and connect RB6 to the E Strobe. RB6 is the 
-; I2CSCL line, but it could still be used by setting by setting the Port C 
+; also the I2CSCL line, and could still be used as such by setting the LCD R/W line to READ and
+; Port C to inputs so that the I2CSCL clock pulses on the LCD E strobe would harmlessly cause
+; data to be read from the LCD and ignored by the PIC.
 ;
 ; Port B        Pin/Options/Selected Option/Description  (only the most common options are listed)
 ;
